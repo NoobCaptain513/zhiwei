@@ -1,0 +1,28 @@
+spring:
+  profiles:
+    active: dev
+  application:
+    name: zhiwei
+  docker:
+    compose:
+      enabled: false
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    repair-on-migrate: true
+    url: jdbc:mysql://192.168.100.142:3306/zhiwei?useUnicode=true&characterEncoding=utf-8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
+    user: root
+    password: 123456
+
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    db-config:
+      logic-delete-field: isDeleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+

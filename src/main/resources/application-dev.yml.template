@@ -1,0 +1,119 @@
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3306/zhiwei?useUnicode=true&characterEncoding=utf-8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
+    username: root
+    password: your_mysql_password
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      password: your_redis_password
+  rabbitmq:
+    host: localhost
+    port: 5672
+    username: admin
+    password: your_rabbitmq_password
+  ai:
+    dashscope:
+      api-key: ${DASHSCOPE_API_KEY:sk-your-api-key}
+      chat:
+        options:
+          model: qwen-plus
+
+
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+
+zhiwei:
+  ai:
+    prompt:
+      app-name: 智维
+    default-provider: spring-ai-alibaba
+    router:
+      latency-penalty-ms: 2000
+      metrics-window-size: 100
+      failover-chain:
+        - spring-ai-alibaba
+        - langchain4j-openai
+        - native-dashscope
+        - ollama
+      circuit-breaker:
+        failure-rate-threshold: 50
+        slow-call-duration-ms: 5000
+        slow-call-rate-threshold: 80
+        wait-duration-in-open-ms: 30000
+        sliding-window-size: 20
+        minimum-number-of-calls: 5
+      retry:
+        enabled: true
+        max-attempts: 1
+    langchain4j:
+      enabled: true
+      base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+      api-key: ${spring.ai.dashscope.api-key}
+      model: qwen-plus
+      timeout-seconds: 60
+      temperature: 0.7
+      max-tokens: 2048
+    native:
+      enabled: true
+      base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+      api-key: ${spring.ai.dashscope.api-key}
+      model: qwen-plus
+      timeout-seconds: 60
+    ollama:
+      enabled: true
+      base-url: http://localhost:11434/v1
+      api-key: ollama
+      model: qwen2.5:7b
+      timeout-seconds: 120
+    cost:
+      prompt-price-per-1k: 0.004
+      completion-price-per-1k: 0.012
+      baseline-per-request: 0.02
+    health:
+      check-interval-ms: 30000
+      event-log-size: 200
+      budget:
+        enabled: true
+        first-probe-delay-ms: 5000
+        second-probe-delay-ms: 10000
+        third-probe-delay-ms: 15000
+        probe-timeout-ms: 5000
+    embedding:
+      enabled: true
+      base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+      api-key: ${spring.ai.dashscope.api-key}
+      model: text-embedding-v4
+      dimensions: 1536
+      timeout-seconds: 60
+      ollama:
+        enabled: true
+        base-url: http://localhost:11434/v1
+        model: nomic-embed-text
+        dimensions: 768
+        timeout-seconds: 30
+    rag:
+      enabled: true
+      candidate-k: 20
+      top-k: 5
+      vector-weight: 0.85
+      lexical-weight: 0.15
+      inject-on-chat: true
+    datasource:
+      pgvector:
+        jdbc-url: jdbc:postgresql://localhost:5432/zhiwei_rag
+        username: postgres
+        password: your_pg_password
+        driver-class-name: org.postgresql.Driver
+        maximum-pool-size: 10
+  security:
+    api-key-enabled: false
+    api-key-header: X-API-Key
+    api-keys:
+      - dev-secret-key
