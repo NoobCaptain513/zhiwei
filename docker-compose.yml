@@ -1,0 +1,169 @@
+# ============================================================
+# 智维 (ZhiWei) — 全栈 Docker Compose
+# 服务: MySQL + PostgreSQL(pgvector) + Redis + RabbitMQ + Ollama + App
+# ============================================================
+
+services:
+
+  # -------------------- MySQL 8.0 --------------------
+  mysql:
+    image: mysql:8.0
+    container_name: zhiwei-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root123}
+      MYSQL_DATABASE: zhiwei
+      MYSQL_USER: zhiwei
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-zhiwei123}
+      TZ: Asia/Shanghai
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-root123}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - zhiwei-net
+
+  # -------------------- PostgreSQL 16 + pgvector --------------------
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: zhiwei-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: zhiwei_rag
+      POSTGRES_USER: ${POSTGRES_USER:-zhiwei}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-zhiwei123}
+      TZ: Asia/Shanghai
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./src/main/resources/db/pgvector:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-zhiwei} -d zhiwei_rag"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - zhiwei-net
+
+  # -------------------- Redis 7 --------------------
+  redis:
+    image: redis:7-alpine
+    container_name: zhiwei-redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:-zhiwei123} --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-zhiwei123}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - zhiwei-net
+
+  # -------------------- RabbitMQ 3 --------------------
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: zhiwei-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-zhiwei}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-zhiwei123}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - zhiwei-net
+
+  # -------------------- Ollama (按需启用) --------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: zhiwei-ollama
+    restart: unless-stopped
+    profiles:
+      - ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    environment:
+      OLLAMA_HOST: 0.0.0.0
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    # 启动后自动拉取模型
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        ollama serve &
+        sleep 10
+        ollama pull qwen2.5:7b
+        ollama pull nomic-embed-text
+        wait
+    networks:
+      - zhiwei-net
+
+  # -------------------- 智维应用 --------------------
+  zhiwei:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zhiwei-app
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY}
+      TZ: Asia/Shanghai
+    depends_on:
+      mysql:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - zhiwei-net
+
+# -------------------- Volumes --------------------
+volumes:
+  mysql-data:
+    driver: local
+  postgres-data:
+    driver: local
+  redis-data:
+    driver: local
+  rabbitmq-data:
+    driver: local
+  ollama-data:
+    driver: local
+
+# -------------------- Networks --------------------
+networks:
+  zhiwei-net:
+    driver: bridge
