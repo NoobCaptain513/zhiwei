@@ -10,6 +10,7 @@ import com.zihan.zhiwei.ai.provider.dto.ProviderChatResponse;
 import com.zihan.zhiwei.ai.provider.failover.FailoverResult;
 import com.zihan.zhiwei.ai.rag.RagContextBuilder;
 import com.zihan.zhiwei.ai.rag.RagMessageAugmentor;
+import com.zihan.zhiwei.ai.reply.AgentClarificationService;
 import com.zihan.zhiwei.ai.reply.AgentFallbackHandler;
 import com.zihan.zhiwei.ai.reply.AgentReply;
 import com.zihan.zhiwei.ai.reply.AgentReplyService;
@@ -19,7 +20,6 @@ import com.zihan.zhiwei.ai.tool.OpsAgentToolService;
 import com.zihan.zhiwei.ai.tool.ToolCallResult;
 import com.zihan.zhiwei.ai.tool.ToolResultCollector;
 import com.zihan.zhiwei.ai.usage.UsageRecorder;
-import com.zihan.zhiwei.common.Result;
 import com.zihan.zhiwei.pojo.dto.AgentRequest;
 import com.zihan.zhiwei.pojo.dto.AgentResponse;
 import com.zihan.zhiwei.pojo.entity.Conversation;
@@ -39,6 +39,7 @@ import java.util.function.Consumer;
 /**
  * D14+D15: Agent 全链路实现。
  * D15: 新增 streamAgent() 流式版本。
+ * D29: 意图置信度不足时主动引导。
  */
 @Slf4j
 @Service
@@ -56,8 +57,9 @@ public class AgentServiceImpl implements AgentService {
     private final ToolResultCollector toolResultCollector;
     private final AgentFallbackHandler fallbackHandler;
     private final AgentReplyService replyService;
+    private final AgentClarificationService clarificationService;
 
-    // ==================== D14: 同步 Agent（保持不变）====================
+    // ==================== D14+D29: 同步 Agent ====================
 
     @Override
     @Transactional
@@ -72,8 +74,30 @@ public class AgentServiceImpl implements AgentService {
 
         AgentIntent intent = intentAnalyzer.analyze(request.message());
         String primaryIntent = intent.getPrimary();
-        log.info("[Agent] userId={} intent={} message='{}'",
-                request.userId(), primaryIntent, request.message());
+        log.info("[Agent] userId={} intent={} lowConfidence={} message='{}'",
+                request.userId(), primaryIntent, intent.isLowConfidence(), request.message());
+
+        // D29: 置信度不足 → 主动引导，不调用 LLM
+        AgentReply clarifyReply = clarificationService.buildClarifyReply(intent);
+        if (clarifyReply != null) {
+            String encoded = replyService.encode(clarifyReply);
+            Message assistantMessage = conversationService.saveMessage(
+                    conversation.getId(), "assistant", encoded);
+            log.info("[Agent] clarify userId={} options={}",
+                    request.userId(),
+                    clarifyReply.getCards() == null ? 0 : clarifyReply.getCards().size());
+            return AgentResponse.builder()
+                    .conversationId(conversation.getId())
+                    .messageId(assistantMessage.getId())
+                    .content(clarifyReply.getText())
+                    .cards(clarifyReply.getCards())
+                    .intent("clarification")
+                    .provider("system")
+                    .model("intent-tree")
+                    .totalTokens(0)
+                    .degraded(false)
+                    .build();
+        }
 
         String systemPrompt = promptService.buildSystemPrompt(primaryIntent, Map.of(
                 "user", request.userId(),
@@ -133,49 +157,68 @@ public class AgentServiceImpl implements AgentService {
                 .build();
     }
 
-    // ==================== D15: 流式 Agent ====================
+    // ==================== D15+D29: 流式 Agent ====================
 
-    /**
-     * D15: Agent 全链路流式版。
-     * 流程：意图 → 工具 → 构建 prompt → 流式调用 → 卡片组装 → 入库 → usage。
-     */
     @Override
     public AgentStreamResult streamAgent(AgentRequest request,
-                                         Consumer<String> onToken,
-                                         Consumer<String> onCard) {
-        // 0. 清空上次工具收集
+                                          Consumer<String> onToken,
+                                          Consumer<String> onCard) {
         toolResultCollector.clear();
 
-        // 1. 会话管理
         Conversation conversation = conversationService.getOrCreate(
                 request.userId(), request.conversationId());
         conversationService.saveMessage(conversation.getId(), "user", request.message());
 
         List<Message> history = conversationService.listMessages(conversation.getId());
 
-        // 2. 意图识别
         AgentIntent intent = intentAnalyzer.analyze(request.message());
         String primaryIntent = intent.getPrimary();
-        log.info("[StreamAgent] userId={} intent={}", request.userId(), primaryIntent);
+        log.info("[StreamAgent] userId={} intent={} lowConfidence={}",
+                request.userId(), primaryIntent, intent.isLowConfidence());
 
-        // 3. 构建 system prompt
+        // D29: 置信度不足 → 主动引导
+        AgentReply clarifyReply = clarificationService.buildClarifyReply(intent);
+        if (clarifyReply != null) {
+            String clarifyText = clarifyReply.getText();
+            onToken.accept(clarifyText);
+            if (clarifyReply.getCards() != null && !clarifyReply.getCards().isEmpty()) {
+                try {
+                    String cardJson = com.zihan.zhiwei.common.Result.ok(clarifyReply.getCards()).toString();
+                    onCard.accept(cardJson);
+                } catch (Exception e) {
+                    log.warn("[StreamAgent] clarify card failed: {}", e.getMessage());
+                }
+            }
+            String encoded = replyService.encode(clarifyReply);
+            Message assistantMessage = conversationService.saveMessage(
+                    conversation.getId(), "assistant", encoded);
+            return AgentStreamResult.builder()
+                    .conversationId(conversation.getId())
+                    .messageId(assistantMessage.getId())
+                    .content(clarifyText)
+                    .cards(clarifyReply.getCards())
+                    .intent("clarification")
+                    .model("intent-tree")
+                    .provider("system")
+                    .totalTokens(0)
+                    .degraded(false)
+                    .build();
+        }
+
         String systemPrompt = promptService.buildSystemPrompt(primaryIntent, Map.of(
                 "user", request.userId(),
                 "time", java.time.LocalDateTime.now()
                         .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
         ));
 
-        // 4. 模拟工具调用
         List<ToolCallResult> toolCalls = simulateToolCalls(primaryIntent, request.message());
         if (!toolCalls.isEmpty()) {
             toolResultCollector.addAll(toolCalls);
         }
 
-        // 5. 构建消息列表
         List<ProviderChatMessage> providerMessages = buildMessages(
                 systemPrompt, history, toolResultCollector.toContextBlock(), request.message());
 
-        // 6. 流式调用（收集完整文本）
         StringBuilder fullContent = new StringBuilder();
         Consumer<String> trackingOnToken = token -> {
             fullContent.append(token);
@@ -185,7 +228,6 @@ public class AgentServiceImpl implements AgentService {
         ProviderChatRequest providerRequest = new ProviderChatRequest(request.model(), providerMessages);
         StreamResult streamResult = modelProviderRouter.streamChatWithFailover(providerRequest, trackingOnToken);
 
-        // 7. 卡片组装 + 兜底
         String modelText = fullContent.toString();
         AgentReply reply;
         AgentReply fallback = fallbackHandler.fallbackIfNeeded(request.message(), modelText, primaryIntent);
@@ -195,17 +237,15 @@ public class AgentServiceImpl implements AgentService {
             reply = replyService.buildReply(modelText, primaryIntent, false);
         }
 
-        // 8. 发送卡片
         if (reply.getCards() != null && !reply.getCards().isEmpty()) {
             try {
-                String cardJson = Result.ok(reply.getCards()).toString();
+                String cardJson = com.zihan.zhiwei.common.Result.ok(reply.getCards()).toString();
                 onCard.accept(cardJson);
             } catch (Exception e) {
                 log.warn("[StreamAgent] send card failed: {}", e.getMessage());
             }
         }
 
-        // 9. 保存助手消息 + 记录 usage
         String encodedContent = replyService.encode(reply);
         Message assistantMessage = conversationService.saveMessage(
                 conversation.getId(), "assistant", encodedContent);
@@ -234,7 +274,7 @@ public class AgentServiceImpl implements AgentService {
                 .build();
     }
 
-    // ==================== 私有方法（保持不变）====================
+    // ==================== 私有方法 ====================
 
     private List<ToolCallResult> simulateToolCalls(String intent, String message) {
         List<ToolCallResult> results = new ArrayList<>();

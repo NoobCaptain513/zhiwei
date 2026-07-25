@@ -9,11 +9,6 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
 
-/**
- * MCP Server 入口。
- * POST /api/mcp — JSON-RPC 2.0
- * 支持方法：initialize / tools/list / tools/call
- */
 @RestController
 @RequestMapping("/api/mcp")
 @Tag(name = "MCP Server")
@@ -23,13 +18,21 @@ public class McpController {
     private final McpJsonRpcService mcpJsonRpcService;
 
     @PostMapping
-    @Operation(summary = "MCP JSON-RPC 入口")
+    @Operation(summary = "MCP JSON-RPC 2.0 入口")
     public Result<Map<String, Object>> handle(@RequestBody Map<String, Object> request) {
         Map<String, Object> response = mcpJsonRpcService.handle(request);
         if (response == null) {
-            // notifications 不需要响应
             return Result.ok(null);
         }
         return Result.ok(response);
+    }
+
+    /**
+     * D32: Streamable HTTP 传输端点（SSE 兼容）。
+     */
+    @PostMapping("/stream")
+    @Operation(summary = "MCP Streamable HTTP (SSE)")
+    public Result<Map<String, Object>> handleStream(@RequestBody Map<String, Object> request) {
+        return handle(request);
     }
 }

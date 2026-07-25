@@ -1,6 +1,6 @@
 # ============================================================
 # 智维 (ZhiWei) — 全栈 Docker Compose
-# 服务: MySQL + PostgreSQL(pgvector) + Redis + RabbitMQ + Ollama + App
+# 服务: MySQL + PostgreSQL(pgvector) + Redis + RabbitMQ + Ollama + App + MCP Server
 # ============================================================
 
 services:
@@ -146,6 +146,29 @@ services:
       redis:
         condition: service_healthy
       rabbitmq:
+        condition: service_healthy
+    networks:
+      - zhiwei-net
+
+  # -------------------- 智维 MCP Server（独立进程） --------------------
+  zhiwei-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp
+    container_name: zhiwei-mcp-server
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      SPRING_PROFILES_ACTIVE: mcp,docker
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY}
+      TZ: Asia/Shanghai
+    depends_on:
+      mysql:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     networks:
       - zhiwei-net

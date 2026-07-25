@@ -18,6 +18,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -128,11 +129,16 @@ public class DocumentUploadController {
         if (doc == null) {
             return Result.fail(404, "文档不存在");
         }
-        return Result.ok(Map.of(
-                "id", doc.getId(), "fileName", doc.getFileName(),
-                "status", doc.getStatus(), "totalChunks", doc.getTotalChunks(),
-                "indexedChunks", doc.getIndexedChunks(), "errorMessage", doc.getErrorMessage(),
-                "createTime", doc.getCreateTime(), "updateTime", doc.getUpdateTime()));
+        Map<String, Object> map = new HashMap<>();
+        map.put("id", doc.getId());
+        map.put("fileName", doc.getFileName());
+        map.put("status", doc.getStatus());
+        map.put("totalChunks", doc.getTotalChunks());
+        map.put("indexedChunks", doc.getIndexedChunks());
+        map.put("errorMessage", doc.getErrorMessage());
+        map.put("createTime", doc.getCreateTime());
+        map.put("updateTime", doc.getUpdateTime());
+        return Result.ok(map);
     }
 
     @GetMapping("/documents")
@@ -143,10 +149,14 @@ public class DocumentUploadController {
         var docs = documentMapper.selectList(null);
         List<Map<String, Object>> list = new ArrayList<>();
         for (KnowledgeDocument d : docs) {
-            list.add(Map.of(
-                    "id", d.getId(), "fileName", d.getFileName(),
-                    "status", d.getStatus(), "totalChunks", d.getTotalChunks(),
-                    "indexedChunks", d.getIndexedChunks(), "createTime", d.getCreateTime()));
+            Map<String, Object> map = new HashMap<>();
+            map.put("id", d.getId());
+            map.put("fileName", d.getFileName());
+            map.put("status", d.getStatus());
+            map.put("totalChunks", d.getTotalChunks());
+            map.put("indexedChunks", d.getIndexedChunks());
+            map.put("createTime", d.getCreateTime());
+            list.add(map);
         }
         return Result.ok(list);
     }

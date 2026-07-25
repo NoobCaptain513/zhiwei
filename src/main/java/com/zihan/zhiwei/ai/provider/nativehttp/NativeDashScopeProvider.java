@@ -8,6 +8,7 @@ import com.zihan.zhiwei.ai.provider.ModelProvider;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatMessage;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatRequest;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatResponse;
+import com.zihan.zhiwei.ai.provider.probe.ProbeResult;
 import com.zihan.zhiwei.ai.stream.StreamResult;
 import com.zihan.zhiwei.common.exception.BusinessException;
 import lombok.RequiredArgsConstructor;
@@ -32,6 +33,7 @@ import java.util.function.Consumer;
 /**
  * D6+D15: Native HTTP DashScope Provider。
  * D15: 实现真正的 SSE 流式输出（stream: true）。
+ * D28: 覆写 probe()，用 max_tokens=1 做轻量探测。
  */
 @Slf4j
 @Component
@@ -65,7 +67,42 @@ public class NativeDashScopeProvider implements ModelProvider {
         return PROVIDER_NAME;
     }
 
-    // ==================== 同步 chat（保持不变）====================
+    /**
+     * D28: 用 max_tokens=1 的极简请求探测 DashScope API 可用性。
+     */
+    @Override
+    public ProbeResult probe() {
+        long start = System.currentTimeMillis();
+        try {
+            ObjectNode body = objectMapper.createObjectNode();
+            body.put("model", defaultModel);
+            body.put("max_tokens", 1);
+            body.put("stream", false);
+            ArrayNode messages = body.putArray("messages");
+            ObjectNode msg = messages.addObject();
+            msg.put("role", "user");
+            msg.put("content", "ping");
+
+            HttpRequest httpRequest = HttpRequest.newBuilder()
+                    .uri(URI.create(trimSlash(baseUrl) + "/chat/completions"))
+                    .timeout(Duration.ofSeconds(2))
+                    .header("Authorization", "Bearer " + apiKey)
+                    .header("Content-Type", MediaType.APPLICATION_JSON_VALUE)
+                    .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
+                    .build();
+
+            HttpResponse<String> httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
+            if (httpResponse.statusCode() >= 200 && httpResponse.statusCode() < 300) {
+                return ProbeResult.ok(name(), System.currentTimeMillis() - start);
+            }
+            return ProbeResult.fail(name(), System.currentTimeMillis() - start,
+                    "HTTP " + httpResponse.statusCode());
+        } catch (Exception e) {
+            return ProbeResult.fail(name(), System.currentTimeMillis() - start, e.getMessage());
+        }
+    }
+
+    // ==================== 同步 chat ====================
 
     @Override
     public ProviderChatResponse chat(ProviderChatRequest request) {

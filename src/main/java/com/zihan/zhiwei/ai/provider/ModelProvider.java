@@ -1,14 +1,18 @@
 package com.zihan.zhiwei.ai.provider;
 
+import com.zihan.zhiwei.ai.provider.dto.ProviderChatMessage;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatRequest;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatResponse;
+import com.zihan.zhiwei.ai.provider.probe.ProbeResult;
 import com.zihan.zhiwei.ai.stream.StreamResult;
 
+import java.util.List;
 import java.util.function.Consumer;
 
 /**
  * AI 模型提供方抽象接口。
  * D15: 新增 streamChat() 流式方法，默认回退同步 chat()。
+ * D28: 新增 probe() 探测方法，支持首包探测。
  */
 public interface ModelProvider {
 
@@ -41,5 +45,24 @@ public interface ModelProvider {
                 response.promptTokens(),
                 response.completionTokens()
         );
+    }
+
+    /**
+     * D28: 探测 Provider 可用性（首包探测）。
+     * 默认实现：发一条内容为 "ping" 的同步请求，成功即视为健康。
+     * 使用 Native HTTP 的 Provider 应覆写此方法，以 max_tokens=1 做更轻量的探测。
+     */
+    default ProbeResult probe() {
+        long start = System.currentTimeMillis();
+        try {
+            ProviderChatRequest pingRequest = new ProviderChatRequest(
+                    null,
+                    List.of(new ProviderChatMessage("user", "ping"))
+            );
+            chat(pingRequest);
+            return ProbeResult.ok(name(), System.currentTimeMillis() - start);
+        } catch (Exception e) {
+            return ProbeResult.fail(name(), System.currentTimeMillis() - start, e.getMessage());
+        }
     }
 }

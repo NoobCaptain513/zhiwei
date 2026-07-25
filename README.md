@@ -227,7 +227,7 @@ com.zhiwei
 - **双重闭环成本模型**：指标驱动路由决策 + 实际计费值校准成本权重，成本统计实时喂给路由引擎
 - **RAG 混合重排序**：85% 向量余弦相似度 + 15% 字面匹配，解决纯向量检索的术语匹配问题
 - **Agent 全链路**：意图识别 → Prompt 模板 → 工具调用 → 结构化卡片 → 降级兜底，5 个运维场景专用工具
-- **MCP Server**：JSON-RPC 2.0 协议，6 个工具暴露，支持外部 AI 自动发现并调用运维工具
+- **MCP Server**：独立进程部署，JSON-RPC 2.0 协议，6 个工具暴露，支持外部 AI 自动发现并调用运维工具
 - **SSE 真流式**：三个 Provider 各自实现真流式输出，统一 start/delta/done/error 事件协议
 
 ---
@@ -243,14 +243,24 @@ com.zhiwei
 ### 启动
 
 ```bash
-# 1. 启动中间件
+# 1. 启动中间件 + 主应用
 docker compose up -d
 
-# 2. 配置 API Key
-export DASHSCOPE_API_KEY=sk-your-key-here
+# 2. 启动 MCP Server（独立进程，可选）
+docker compose up -d zhiwei-mcp
 
-# 3. 启动应用
+# 3. 配置 API Key
+export DASHSCOPE_API_KEY=sk-your-key-here
+```
+
+### 本地开发启动
+
+```bash
+# 主应用
 ./mvnw spring-boot:run
+
+# MCP Server（新终端）
+./mvnw spring-boot:run -Dspring-boot.run.profiles=mcp -Dspring-boot.run.arguments=--server.port=8081
 ```
 
 ### 访问
@@ -259,6 +269,7 @@ export DASHSCOPE_API_KEY=sk-your-key-here
 |------|------|
 | http://localhost:8080/swagger-ui.html | API 文档 |
 | http://localhost:8080/actuator | 健康检查 |
+| http://localhost:8081/api/mcp | MCP Server（JSON-RPC 2.0） |
 | http://localhost:15672 | RabbitMQ 管理面板 |
 
 ---

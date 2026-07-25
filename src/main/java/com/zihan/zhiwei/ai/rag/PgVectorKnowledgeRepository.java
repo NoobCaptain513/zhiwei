@@ -11,11 +11,16 @@ import org.springframework.stereotype.Repository;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
- * D10: pgvector 知识库仓储（余弦检索）
+ * D10: pgvector 知识库仓储（余弦检索 + 关键词检索）
  */
 @Slf4j
 @Repository
@@ -87,6 +92,66 @@ public class PgVectorKnowledgeRepository {
         return jdbcTemplate.query(sql, new ScoredChunkMapper(), literal, literal, k);
     }
 
+    /**
+     * D30: 关键词检索。
+     * 查询分词后用 ILIKE 匹配 content，按匹配词占比打分。
+     */
+    public List<ScoredChunk> searchByKeyword(String query, int limit) {
+        Set<String> tokens = tokenize(query);
+        if (tokens.isEmpty()) {
+            return List.of();
+        }
+
+        List<String> searchTokens = tokens.stream()
+                .filter(t -> t.length() >= 2)
+                .sorted(Comparator.comparingInt(String::length).reversed())
+                .limit(5)
+                .toList();
+
+        if (searchTokens.isEmpty()) {
+            return List.of();
+        }
+
+        StringBuilder where = new StringBuilder();
+        List<Object> params = new ArrayList<>();
+        for (int i = 0; i < searchTokens.size(); i++) {
+            if (i > 0) where.append(" OR ");
+            where.append("content ILIKE ?");
+            params.add("%" + searchTokens.get(i) + "%");
+        }
+
+        String sql = "SELECT id, document_id, source_id, title, content, token_count, create_time"
+                + " FROM ai_knowledge_chunk WHERE " + where
+                + " ORDER BY id DESC LIMIT ?";
+        params.add(limit);
+
+        RowMapper<ScoredChunk> keywordMapper = (rs, rowNum) -> {
+            Timestamp ts = rs.getTimestamp("create_time");
+            KnowledgeChunk chunk = new KnowledgeChunk(
+                    rs.getLong("id"),
+                    (Long) rs.getObject("document_id"),
+                    rs.getString("source_id"),
+                    rs.getString("title"),
+                    rs.getString("content"),
+                    rs.getInt("token_count"),
+                    ts == null ? null : ts.toLocalDateTime()
+            );
+            String content = rs.getString("content");
+            int matched = 0;
+            if (content != null) {
+                String lowerContent = content.toLowerCase(Locale.ROOT);
+                for (String t : searchTokens) {
+                    if (lowerContent.contains(t.toLowerCase(Locale.ROOT))) {
+                        matched++;
+                    }
+                }
+            }
+            double score = (double) matched / searchTokens.size();
+            return new ScoredChunk(chunk, score);
+        };
+        return jdbcTemplate.query(sql, keywordMapper, params.toArray());
+    }
+
     public long count() {
         Long n = jdbcTemplate.queryForObject("SELECT COUNT(1) FROM ai_knowledge_chunk", Long.class);
         return n == null ? 0L : n;
@@ -110,6 +175,31 @@ public class PgVectorKnowledgeRepository {
         }
         sb.append(']');
         return sb.toString();
+    }
+
+    private static final Pattern TOKEN_SPLIT =
+            Pattern.compile("[\\s\\p{Punct}，。！？；：、\"\"''（）【】《》]+");
+
+    static Set<String> tokenize(String text) {
+        Set<String> set = new HashSet<>();
+        if (text == null || text.isBlank()) {
+            return set;
+        }
+        String normalized = text.toLowerCase(Locale.ROOT).trim();
+        String compact = TOKEN_SPLIT.matcher(normalized).replaceAll("");
+        if (compact.length() >= 2) {
+            for (int i = 0; i < compact.length() - 1; i++) {
+                set.add(compact.substring(i, i + 2));
+            }
+        } else if (!compact.isEmpty()) {
+            set.add(compact);
+        }
+        for (String part : TOKEN_SPLIT.split(normalized)) {
+            if (part != null && !part.isBlank()) {
+                set.add(part);
+            }
+        }
+        return set;
     }
 
     public record ScoredChunk(KnowledgeChunk chunk, double vectorScore) {}

@@ -10,7 +10,8 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 /**
- * D11: 把检索结果拼成可注入 system prompt / Advisor 的上下文文本。
+ * D11+D31: RAG 上下文构建器。
+ * D31: 支持传入对话历史用于查询改写。
  */
 @Component
 @RequiredArgsConstructor
@@ -26,16 +27,29 @@ public class RagContextBuilder {
     private int defaultCandidateK;
 
     public List<RagHit> retrieve(String query) {
-        return aiRagService.search(query, defaultTopK, defaultCandidateK);
+        return aiRagService.searchWithRewrite(query, null, defaultTopK, defaultCandidateK);
+    }
+
+    /**
+     * D31: 带历史上下文的检索。
+     */
+    public List<RagHit> retrieve(String query, String historyContext) {
+        return aiRagService.searchWithRewrite(query, historyContext, defaultTopK, defaultCandidateK);
     }
 
     public List<RagHit> retrieve(String query, Integer topK, Integer candidateK) {
-        return aiRagService.search(query, topK, candidateK);
+        return aiRagService.searchWithRewrite(query, null, topK, candidateK);
     }
 
-    /** Native / 通用：拼进 system 消息 */
     public String buildContextBlock(String query) {
         return buildContextBlock(retrieve(query));
+    }
+
+    /**
+     * D31: 带对话历史的上下文构建。
+     */
+    public String buildContextBlock(String query, String historyContext) {
+        return buildContextBlock(retrieve(query, historyContext));
     }
 
     public String buildContextBlock(List<RagHit> hits) {

@@ -4,6 +4,8 @@ import com.zihan.zhiwei.ai.provider.ModelProvider;
 import com.zihan.zhiwei.ai.provider.ProviderMetrics;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatRequest;
 import com.zihan.zhiwei.ai.provider.health.FailoverEventLog;
+import com.zihan.zhiwei.ai.provider.probe.FirstPacketProbeConfig;
+import com.zihan.zhiwei.ai.provider.probe.ModelProbeService;
 import com.zihan.zhiwei.common.exception.BusinessException;
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
@@ -16,16 +18,20 @@ import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
  * D8: 故障降级
  * - 每个 Provider 一把 CircuitBreaker（CLOSED / OPEN / HALF_OPEN）
- * - 降级链：spring-ai-alibaba → langchain4j-openai → native-dashscope
+ * - 降级链：spring-ai-alibaba → langchain4j-openai → native-dashscope → ollama
  * - chat 幂等：同一 Provider 失败后再重试 1 次；切换 Provider 不算重试次数
+ * - D28: 首包探测 — 在执行链之前并行探测前 N 个候选，探测失败的直接跳过
  */
 @Slf4j
 @Component
@@ -44,6 +50,8 @@ public class FailoverHandler {
     private final boolean retryEnabled;
     private final int maxAttempts;
     private final FailoverEventLog failoverEventLog;
+    private final ModelProbeService probeService;
+    private final int probeCandidateLimit;
 
     public FailoverHandler(
             List<ModelProvider> providers,
@@ -52,23 +60,30 @@ public class FailoverHandler {
             Environment environment,
             @Value("${zhiwei.ai.router.retry.enabled:true}") boolean retryEnabled,
             @Value("${zhiwei.ai.router.retry.max-attempts:1}") int maxAttempts,
-            FailoverEventLog failoverEventLog) {
+            FailoverEventLog failoverEventLog,
+            ModelProbeService probeService,
+            FirstPacketProbeConfig probeConfig) {
         this.providerMap = providers.stream()
                 .collect(Collectors.toMap(ModelProvider::name, Function.identity(), (a, b) -> a));
         this.circuitBreakerRegistry = circuitBreakerRegistry;
         this.providerMetrics = providerMetrics;
-        // YAML 列表绑定为 failover-chain[0]/[1]...，不能用 @Value("${...failover-chain}")
         this.failoverChain = Binder.get(environment)
                 .bind("zhiwei.ai.router.failover-chain", Bindable.listOf(String.class))
                 .orElse(DEFAULT_FAILOVER_CHAIN);
         this.retryEnabled = retryEnabled;
         this.maxAttempts = Math.max(0, maxAttempts);
+        this.probeCandidateLimit = Math.max(1, probeConfig.getCandidateLimit());
         log.info("[Failover] chain={}", this.failoverChain);
         this.failoverEventLog = failoverEventLog;
+        this.probeService = probeService;
     }
 
     public FailoverResult execute(String primaryProvider, ProviderChatRequest request) {
         List<String> chain = buildChain(primaryProvider);
+
+        // D28: 首包探测 — 探测前 N 个候选
+        Set<String> probeDead = preProbe(chain);
+
         List<FailoverEvent> events = new ArrayList<>();
         Exception lastError = null;
 
@@ -85,6 +100,15 @@ public class FailoverHandler {
                 log.warn("[Failover] circuit OPEN, skip provider={}", name);
                 if (i + 1 < chain.size()) {
                     events.add(FailoverEvent.of(name, chain.get(i + 1), "CIRCUIT_OPEN"));
+                }
+                continue;
+            }
+
+            // D28: 探测失败直接跳过
+            if (probeDead.contains(name)) {
+                log.warn("[Failover] probe dead, skip provider={}", name);
+                if (i + 1 < chain.size()) {
+                    events.add(FailoverEvent.of(name, chain.get(i + 1), "PROBE_DEAD"));
                 }
                 continue;
             }
@@ -142,6 +166,31 @@ public class FailoverHandler {
 
     public boolean isCircuitOpen(String provider) {
         return stateOf(provider) == CircuitBreaker.State.OPEN;
+    }
+
+    /**
+     * D28: 首包预探测。并行探测链中前 N 个可用 Provider，返回探测失败的集合。
+     */
+    private Set<String> preProbe(List<String> chain) {
+        if (!probeService.isEnabled()) {
+            return Collections.emptySet();
+        }
+        List<ModelProvider> candidates = chain.stream()
+                .map(providerMap::get)
+                .filter(Objects::nonNull)
+                .filter(ModelProvider::isAvailable)
+                .limit(probeCandidateLimit)
+                .collect(Collectors.toCollection(ArrayList::new));
+
+        if (candidates.isEmpty()) {
+            return Collections.emptySet();
+        }
+
+        List<ModelProvider> healthy = probeService.filterAvailable(candidates, probeCandidateLimit);
+        return candidates.stream()
+                .filter(p -> !healthy.contains(p))
+                .map(ModelProvider::name)
+                .collect(Collectors.toSet());
     }
 
     private List<String> buildChain(String primary) {
