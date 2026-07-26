@@ -42,8 +42,10 @@ public class ChatServiceImpl implements ChatService {
 
         List<Message> history = conversationService.listMessages(conversation.getId());
         List<ProviderChatMessage> providerMessages = new ArrayList<>();
-        for (Message item : history) {
-            providerMessages.add(new ProviderChatMessage(item.getRole(), item.getContent()));
+        int maxHistory = 20; // P2-17 修复：截断历史，防止超出模型 context 限制
+        int start = Math.max(0, history.size() - maxHistory);
+        for (int i = start; i < history.size(); i++) {
+            providerMessages.add(new ProviderChatMessage(history.get(i).getRole(), history.get(i).getContent()));
         }
         providerMessages = ragMessageAugmentor.augmentIfEnabled(providerMessages);
 
@@ -86,8 +88,10 @@ public class ChatServiceImpl implements ChatService {
         // 2. 加载历史 + RAG 增强
         List<Message> history = conversationService.listMessages(conversation.getId());
         List<ProviderChatMessage> providerMessages = new ArrayList<>();
-        for (Message item : history) {
-            providerMessages.add(new ProviderChatMessage(item.getRole(), item.getContent()));
+        int maxHistory = 20; // P2-17 修复：截断历史，防止超出模型 context 限制
+        int start = Math.max(0, history.size() - maxHistory);
+        for (int i = start; i < history.size(); i++) {
+            providerMessages.add(new ProviderChatMessage(history.get(i).getRole(), history.get(i).getContent()));
         }
         providerMessages = ragMessageAugmentor.augmentIfEnabled(providerMessages);
 
@@ -102,18 +106,28 @@ public class ChatServiceImpl implements ChatService {
         ProviderChatRequest providerRequest = new ProviderChatRequest(request.model(), providerMessages);
         StreamResult streamResult = modelProviderRouter.streamChatWithFailover(providerRequest, wrappedOnToken);
 
-        // 5. 保存助手消息
+        // 5. 保存助手消息 + 记录 usage
         String content = fullContent.toString();
-        Message assistantMessage = conversationService.saveMessage(
-                conversation.getId(), "assistant", content);
-
-        // 6. 记录 usage
         ProviderChatResponse providerResponse = new ProviderChatResponse(
                 content, streamResult.model(), streamResult.provider(),
                 streamResult.promptTokens(), streamResult.completionTokens(), streamResult.totalTokens());
-        usageRecorder.record(conversation.getId(), assistantMessage.getId(),
-                providerResponse, UsageRecorder.MODE_CHAT, 0L, false);
+
+        // P2-12 修复：将最后的 DB 写入抽为 @Transactional 原子方法
+        saveStreamCompletion(conversation.getId(), content, providerResponse, 0L, false);
 
         return streamResult;
+    }
+
+    /**
+     * P2-12 修复：流式完成后，在事务中原子地保存助手消息 + 记录 usage。
+     * 不与长时间的 SSE 流转共享事务，避免长事务锁表。
+     */
+    @Transactional
+    private void saveStreamCompletion(Long conversationId, String content,
+                                       ProviderChatResponse providerResponse,
+                                       long latencyMs, boolean degraded) {
+        conversationService.saveMessage(conversationId, "assistant", content);
+        usageRecorder.record(conversationId, null, providerResponse,
+                UsageRecorder.MODE_CHAT, latencyMs, degraded);
     }
 }

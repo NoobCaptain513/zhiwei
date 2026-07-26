@@ -31,10 +31,11 @@ public class FailoverEventLog {
                 event.fromProvider(), event.toProvider(), event.reason(), event.occurredAt());
     }
 
-    /** 获取最近 N 条降级事件 */
+    /** 获取最近 N 条降级事件（P2-15 修复：直接构造新集合，避免 subList 视图泄漏临时 list） */
     public List<FailoverEvent> recent(int limit) {
         int n = Math.min(limit, events.size());
-        return new ArrayList<>(events).subList(events.size() - n, events.size());
+        int from = events.size() - n;
+        return events.stream().skip(from).limit(n).collect(java.util.stream.Collectors.toList());
     }
 
     public List<FailoverEvent> recent() {

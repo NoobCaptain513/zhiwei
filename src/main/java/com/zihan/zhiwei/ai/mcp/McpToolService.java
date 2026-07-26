@@ -8,6 +8,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
@@ -22,15 +23,21 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class McpToolService {
 
-    private final OpsAgentToolService opsAgentToolService;
+    /**
+     * P1-6 修复：改为可选注入，Mock 工具服务未启用时不影响 MCP 模块启动。
+     */
+    @Autowired(required = false)
+    private OpsAgentToolService opsAgentToolService;
     private final AiRagService aiRagService;
 
     /** 全部工具定义 */
     public List<McpToolDefinition> listTools() {
         List<McpToolDefinition> tools = new ArrayList<>();
 
-        // 1~5：运维工具（从 OpsAgentToolService 复制定义）
-        tools.addAll(opsToolDefinitions());
+        // 1~5：运维工具（P1-6 修复：Mock 未启用时跳过）
+        if (opsAgentToolService != null) {
+            tools.addAll(opsToolDefinitions());
+        }
 
         // 6：RAG 搜索
         tools.add(ragSearchDefinition());
@@ -46,7 +53,13 @@ public class McpToolService {
             if ("rag_search".equals(toolName)) {
                 return callRagSearch(arguments);
             }
-            // 运维工具委托
+            // 运维工具委托（P1-6 修复：Mock 未启用时返回错误）
+            if (opsAgentToolService == null) {
+                return McpToolResult.builder()
+                        .content(List.of(mcpContent("运维工具服务未启用，请配置 zhiwei.ai.tool.mock-enabled=true")))
+                        .isError(true)
+                        .build();
+            }
             ToolCallResult result = opsAgentToolService.execute(toolName, arguments);
             return McpToolResult.builder()
                     .content(List.of(mcpContent(result.getData() != null ? result.getData() : result.getError())))

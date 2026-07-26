@@ -16,6 +16,10 @@ import java.util.function.Consumer;
  */
 public interface ModelProvider {
 
+    // P3-22 修复：角色名 & 探测文本提取为常量
+    String ROLE_USER = "user";
+    String PROBE_TEXT = "ping";
+
     /** Provider 唯一标识，如 spring-ai-alibaba */
     String name();
 
@@ -57,7 +61,7 @@ public interface ModelProvider {
         try {
             ProviderChatRequest pingRequest = new ProviderChatRequest(
                     null,
-                    List.of(new ProviderChatMessage("user", "ping"))
+                    List.of(new ProviderChatMessage(ROLE_USER, PROBE_TEXT))
             );
             chat(pingRequest);
             return ProbeResult.ok(name(), System.currentTimeMillis() - start);

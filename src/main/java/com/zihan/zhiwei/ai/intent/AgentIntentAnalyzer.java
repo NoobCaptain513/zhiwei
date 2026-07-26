@@ -43,6 +43,20 @@ public class AgentIntentAnalyzer {
     );
 
     /**
+     * P3-21 修复：预编译关键词边界匹配 Pattern，避免每次请求在热循环中重复 compile。
+     */
+    private static final Map<String, Pattern> COMPILED_PATTERNS = KEYWORDS.entrySet().stream()
+            .collect(Collectors.toMap(
+                    Map.Entry::getKey,
+                    e -> Pattern.compile(
+                            e.getValue().stream()
+                                    .map(kw -> "\\b" + Pattern.quote(kw.toLowerCase(Locale.ROOT)) + "\\b")
+                                    .collect(Collectors.joining("|")),
+                            Pattern.CASE_INSENSITIVE
+                    )
+            ));
+
+    /**
      * 分析意图。
      */
     public AgentIntent analyze(String message) {
@@ -122,8 +136,9 @@ public class AgentIntentAnalyzer {
             for (String kw : entry.getValue()) {
                 if (lower.contains(kw.toLowerCase(Locale.ROOT))) {
                     score += 1.0;
-                    if (Pattern.compile("\\b" + Pattern.quote(kw.toLowerCase(Locale.ROOT)) + "\\b")
-                            .matcher(lower).find()) {
+                    // P3-21 修复：使用预编译 Pattern，避免热循环中每次 compile
+                    Pattern pattern = COMPILED_PATTERNS.get(entry.getKey());
+                    if (pattern != null && pattern.matcher(lower).find()) {
                         score += 0.3;
                     }
                 }

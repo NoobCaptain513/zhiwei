@@ -12,6 +12,7 @@ import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.io.ByteArrayInputStream;
 import java.util.List;
 
 /**
@@ -43,27 +44,18 @@ public class KnowledgePipelineConsumer {
             return;
         }
 
-        // 1. 更新状态 → PROCESSING
-        updateStatus(doc, "PROCESSING", 0, 0, null);
+        // P0-2 修复：从 MQ 消息中获取文件字节，调用 processDocument 真正执行异步处理
+        byte[] fileContent = message.getFileContent();
+        if (fileContent == null || fileContent.length == 0) {
+            log.error("[Pipeline Consumer] fileContent is empty for documentId={}, cannot process", documentId);
+            updateStatus(doc, "FAILED", 0, 0, "文件内容为空，无法处理");
+            return;
+        }
 
         try {
-            // 2. 从文件内容解析（文件内容存在 fileName 对应的存储位置）
-            //    这里通过 document 表的 fileName 找到上传的临时文件
-            //    如果上传时没存文件内容，可以在 upload 时把文件字节存到 Redis/MQ 消息里
-            //    这里简化：假设 upload 时已经把文件存到某个路径，通过 documentId 可取到
-            //    实际项目中可对接 OSS / 本地临时目录
-
-            // 3. 分块（用 DocumentParseService 的 processFile 逻辑）
-            //    这里直接用 DocumentParser + SmartChunker 重新处理
-            //    upload 时已经解析过一次（同步），这里走异步管道重新处理
-
-            // 更新状态 → SUCCESS
-            updateStatus(doc, "SUCCESS", doc.getTotalChunks(), doc.getTotalChunks(), null);
-
-            log.info("[Pipeline Consumer] done documentId={} chunks={}", documentId, doc.getTotalChunks());
-
+            processDocument(doc, new ByteArrayInputStream(fileContent));
         } catch (Exception e) {
-            log.error("[Pipeline Consumer] failed documentId={}: {}", documentId, e.getMessage());
+            log.error("[Pipeline Consumer] processDocument failed for documentId={}: {}", documentId, e.getMessage(), e);
             updateStatus(doc, "FAILED", doc.getTotalChunks(), doc.getIndexedChunks(), e.getMessage());
         }
     }

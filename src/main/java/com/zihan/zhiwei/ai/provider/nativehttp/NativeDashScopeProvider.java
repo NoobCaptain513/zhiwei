@@ -1,54 +1,28 @@
 package com.zihan.zhiwei.ai.provider.nativehttp;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.zihan.zhiwei.ai.provider.ModelProvider;
-import com.zihan.zhiwei.ai.provider.dto.ProviderChatMessage;
-import com.zihan.zhiwei.ai.provider.dto.ProviderChatRequest;
+import com.zihan.zhiwei.ai.provider.AbstractNativeHttpProvider;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatResponse;
-import com.zihan.zhiwei.ai.provider.probe.ProbeResult;
-import com.zihan.zhiwei.ai.stream.StreamResult;
-import com.zihan.zhiwei.common.exception.BusinessException;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
-
-import java.io.BufferedReader;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
-import java.time.Duration;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Consumer;
 
 /**
  * D6+D15: Native HTTP DashScope Provider。
  * D15: 实现真正的 SSE 流式输出（stream: true）。
  * D28: 覆写 probe()，用 max_tokens=1 做轻量探测。
+ *
+ * P1-8 修复：继承 AbstractNativeHttpProvider，删除 ~150 行重复代码。
  */
 @Slf4j
 @Component
-@RequiredArgsConstructor
 @ConditionalOnProperty(prefix = "zhiwei.ai.native", name = "enabled", havingValue = "true", matchIfMissing = true)
-public class NativeDashScopeProvider implements ModelProvider {
+public class NativeDashScopeProvider extends AbstractNativeHttpProvider {
 
     public static final String PROVIDER_NAME = "native-dashscope";
 
-    private final ObjectMapper objectMapper;
     private final CostCalibrationInterceptor costCalibrationInterceptor;
-
-    private final HttpClient httpClient = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(10))
-            .build();
 
     @Value("${zhiwei.ai.native.base-url:https://dashscope.aliyuncs.com/compatible-mode/v1}")
     private String baseUrl;
@@ -62,191 +36,42 @@ public class NativeDashScopeProvider implements ModelProvider {
     @Value("${zhiwei.ai.native.timeout-seconds:60}")
     private long timeoutSeconds;
 
+    public NativeDashScopeProvider(ObjectMapper objectMapper,
+                                   CostCalibrationInterceptor costCalibrationInterceptor) {
+        super(objectMapper);
+        this.costCalibrationInterceptor = costCalibrationInterceptor;
+    }
+
     @Override
     public String name() {
         return PROVIDER_NAME;
     }
 
-    /**
-     * D28: 用 max_tokens=1 的极简请求探测 DashScope API 可用性。
-     */
-    @Override
-    public ProbeResult probe() {
-        long start = System.currentTimeMillis();
-        try {
-            ObjectNode body = objectMapper.createObjectNode();
-            body.put("model", defaultModel);
-            body.put("max_tokens", 1);
-            body.put("stream", false);
-            ArrayNode messages = body.putArray("messages");
-            ObjectNode msg = messages.addObject();
-            msg.put("role", "user");
-            msg.put("content", "ping");
-
-            HttpRequest httpRequest = HttpRequest.newBuilder()
-                    .uri(URI.create(trimSlash(baseUrl) + "/chat/completions"))
-                    .timeout(Duration.ofSeconds(2))
-                    .header("Authorization", "Bearer " + apiKey)
-                    .header("Content-Type", MediaType.APPLICATION_JSON_VALUE)
-                    .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
-                    .build();
-
-            HttpResponse<String> httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
-            if (httpResponse.statusCode() >= 200 && httpResponse.statusCode() < 300) {
-                return ProbeResult.ok(name(), System.currentTimeMillis() - start);
-            }
-            return ProbeResult.fail(name(), System.currentTimeMillis() - start,
-                    "HTTP " + httpResponse.statusCode());
-        } catch (Exception e) {
-            return ProbeResult.fail(name(), System.currentTimeMillis() - start, e.getMessage());
-        }
-    }
-
-    // ==================== 同步 chat ====================
+    // ==================== 子类提供配置值 ====================
 
     @Override
-    public ProviderChatResponse chat(ProviderChatRequest request) {
-        String model = request.model() != null ? request.model() : defaultModel;
-        try {
-            ObjectNode body = buildRequestBody(request, model, false);
-            HttpRequest httpRequest = HttpRequest.newBuilder()
-                    .uri(URI.create(trimSlash(baseUrl) + "/chat/completions"))
-                    .timeout(Duration.ofSeconds(timeoutSeconds))
-                    .header("Authorization", "Bearer " + apiKey)
-                    .header("Content-Type", MediaType.APPLICATION_JSON_VALUE)
-                    .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
-                    .build();
-
-            HttpResponse<String> httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
-            if (httpResponse.statusCode() < 200 || httpResponse.statusCode() >= 300) {
-                throw new BusinessException("Native Provider 调用失败: HTTP " + httpResponse.statusCode());
-            }
-
-            JsonNode root = objectMapper.readTree(httpResponse.body());
-            String content = root.path("choices").path(0).path("message").path("content").asText(null);
-            if (content == null || content.isBlank()) {
-                throw new BusinessException("Native Provider 返回内容为空");
-            }
-
-            JsonNode usage = root.path("usage");
-            int promptTokens = usage.path("prompt_tokens").asInt(0);
-            int completionTokens = usage.path("completion_tokens").asInt(0);
-            int totalTokens = usage.path("total_tokens").asInt(promptTokens + completionTokens);
-
-            ProviderChatResponse response = new ProviderChatResponse(
-                    content, model, PROVIDER_NAME, promptTokens, completionTokens, totalTokens);
-            costCalibrationInterceptor.calibrate(response);
-            return response;
-        } catch (BusinessException ex) {
-            throw ex;
-        } catch (Exception ex) {
-            throw new BusinessException("Native Provider 调用异常: " + ex.getMessage());
-        }
-    }
-
-    // ==================== D15: 流式 streamChat ====================
+    protected String getBaseUrl() { return baseUrl; }
 
     @Override
-    public StreamResult streamChat(ProviderChatRequest request, Consumer<String> onToken) {
-        String model = request.model() != null ? request.model() : defaultModel;
-        AtomicInteger promptTokens = new AtomicInteger();
-        AtomicInteger completionTokens = new AtomicInteger();
+    protected String getApiKey() { return apiKey; }
 
-        try {
-            ObjectNode body = buildRequestBody(request, model, true);
+    @Override
+    protected String getDefaultModel() { return defaultModel; }
 
-            HttpRequest httpRequest = HttpRequest.newBuilder()
-                    .uri(URI.create(trimSlash(baseUrl) + "/chat/completions"))
-                    .timeout(Duration.ofSeconds(timeoutSeconds))
-                    .header("Authorization", "Bearer " + apiKey)
-                    .header("Content-Type", MediaType.APPLICATION_JSON_VALUE)
-                    .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
-                    .build();
+    @Override
+    protected long getTimeoutSeconds() { return timeoutSeconds; }
 
-            HttpResponse<InputStream> httpResponse = httpClient.send(
-                    httpRequest, HttpResponse.BodyHandlers.ofInputStream());
+    // ==================== 钩子覆写 ====================
 
-            if (httpResponse.statusCode() < 200 || httpResponse.statusCode() >= 300) {
-                String errorBody = new String(httpResponse.body().readAllBytes(), StandardCharsets.UTF_8);
-                throw new BusinessException("Native Stream 调用失败: HTTP " + httpResponse.statusCode()
-                        + " body=" + errorBody);
-            }
-
-            // 逐行读取 SSE 流
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(httpResponse.body(), StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    if (line.isBlank()) {
-                        continue;
-                    }
-                    // SSE 格式: data: {...} 或 data: [DONE]
-                    if (!line.startsWith("data:")) {
-                        continue;
-                    }
-                    String data = line.substring(5).trim();
-                    if ("[DONE]".equals(data)) {
-                        break;
-                    }
-
-                    JsonNode chunk;
-                    try {
-                        chunk = objectMapper.readTree(data);
-                    } catch (Exception e) {
-                        log.debug("[NativeStream] skip unparseable chunk: {}", data);
-                        continue;
-                    }
-
-                    // 提取 delta content
-                    JsonNode choices = chunk.path("choices");
-                    if (choices.isArray() && choices.size() > 0) {
-                        JsonNode delta = choices.get(0).path("delta");
-                        String content = delta.path("content").asText(null);
-                        if (content != null && !content.isEmpty()) {
-                            onToken.accept(content);
-                        }
-                    }
-
-                    // 最后一个 chunk 通常带 usage
-                    JsonNode usage = chunk.path("usage");
-                    if (!usage.isMissingNode()) {
-                        promptTokens.set(usage.path("prompt_tokens").asInt(0));
-                        completionTokens.set(usage.path("completion_tokens").asInt(0));
-                    }
-                }
-            }
-
-            int pt = promptTokens.get();
-            int ct = completionTokens.get();
-            log.debug("[NativeStream] done model={} promptTokens={} completionTokens={}", model, pt, ct);
-            return StreamResult.of(model, PROVIDER_NAME, pt, ct);
-
-        } catch (BusinessException ex) {
-            throw ex;
-        } catch (Exception ex) {
-            throw new BusinessException("Native Stream 调用异常: " + ex.getMessage());
-        }
+    /** DashScope 需要在同步响应后执行成本校准 */
+    @Override
+    protected void afterSyncResponse(ProviderChatResponse response) {
+        costCalibrationInterceptor.calibrate(response);
     }
 
-    // ==================== 工具方法 ====================
-
-    private ObjectNode buildRequestBody(ProviderChatRequest request, String model, boolean stream) {
-        ObjectNode body = objectMapper.createObjectNode();
-        body.put("model", model);
-        body.put("stream", stream);
-        ArrayNode messages = body.putArray("messages");
-        for (ProviderChatMessage item : request.messages()) {
-            ObjectNode msg = messages.addObject();
-            msg.put("role", item.role());
-            msg.put("content", item.content());
-        }
-        return body;
-    }
-
-    private static String trimSlash(String url) {
-        if (url == null || url.isBlank()) {
-            return "";
-        }
-        return url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
+    /** DashScope 同步错误响应不包含 body（原实现），与 Ollama 不同 */
+    @Override
+    protected boolean includeBodyInSyncError() {
+        return false;
     }
 }

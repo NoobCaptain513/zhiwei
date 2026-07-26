@@ -3,6 +3,7 @@ package com.zihan.zhiwei.ai.tool;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -15,10 +16,14 @@ import java.util.Map;
  * D12: 5 个运维工具集。
  * 在真实项目中，每个方法对接 Prometheus / ELK / Jenkins / 工单系统等。
  * 当前为 Mock 实现，展示工具调用的完整链路和返回结构。
+ *
+ * P1-6 修复：添加 @ConditionalOnProperty 开关，默认关闭 Mock 服务，
+ * 防止假数据意外接入生产环境。需对接真实系统后移除此注解。
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
+@ConditionalOnProperty(prefix = "zhiwei.ai.tool", name = "mock-enabled", havingValue = "true")
 public class OpsAgentToolService {
 
     private final ObjectMapper objectMapper;

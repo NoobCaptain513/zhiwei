@@ -194,8 +194,8 @@ public class ModelProviderRouter {
 
     private record Scored(ModelProvider provider, double score) {}
 
+    // P3-20 修复：委托给 ProviderUtils 统一管理
     private static String safeMsg(Exception e) {
-        String msg = e.getMessage();
-        return msg == null ? e.getClass().getSimpleName() : msg.substring(0, Math.min(msg.length(), 120));
+        return ProviderUtils.safeMsg(e);
     }
 }

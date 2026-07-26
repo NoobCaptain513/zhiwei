@@ -2,6 +2,7 @@ package com.zihan.zhiwei.ai.provider.failover;
 
 import com.zihan.zhiwei.ai.provider.ModelProvider;
 import com.zihan.zhiwei.ai.provider.ProviderMetrics;
+import com.zihan.zhiwei.ai.provider.ProviderUtils;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatRequest;
 import com.zihan.zhiwei.ai.provider.health.FailoverEventLog;
 import com.zihan.zhiwei.ai.provider.probe.FirstPacketProbeConfig;
@@ -95,7 +96,14 @@ public class FailoverHandler {
                 continue;
             }
 
-            CircuitBreaker cb = circuitBreakerRegistry.circuitBreaker(name);
+            // P2-14 修复：未注册的 CircuitBreaker 不阻塞降级链
+            CircuitBreaker cb;
+            try {
+                cb = circuitBreakerRegistry.circuitBreaker(name);
+            } catch (Exception e) {
+                log.warn("[Failover] circuit breaker error for provider={}: {}, skip", name, e.getMessage());
+                continue;
+            }
             if (cb.getState() == CircuitBreaker.State.OPEN) {
                 log.warn("[Failover] circuit OPEN, skip provider={}", name);
                 if (i + 1 < chain.size()) {
@@ -160,8 +168,16 @@ public class FailoverHandler {
                 + (lastError != null ? lastError.getMessage() : "unknown"));
     }
 
+    /**
+     * P2-14 修复：CircuitBreaker 获取失败时返回 CLOSED（视为可用）。
+     */
     public CircuitBreaker.State stateOf(String provider) {
-        return circuitBreakerRegistry.circuitBreaker(provider).getState();
+        try {
+            return circuitBreakerRegistry.circuitBreaker(provider).getState();
+        } catch (Exception e) {
+            log.debug("[Failover] circuit breaker error for provider={}: {}, treating as CLOSED", provider, e.getMessage());
+            return CircuitBreaker.State.CLOSED;
+        }
     }
 
     public boolean isCircuitOpen(String provider) {
@@ -206,8 +222,8 @@ public class FailoverHandler {
         return chain;
     }
 
+    // P3-20 修复：委托给 ProviderUtils 统一管理
     private static String safeMsg(Exception e) {
-        String msg = e.getMessage();
-        return msg == null ? e.getClass().getSimpleName() : msg.substring(0, Math.min(msg.length(), 120));
+        return ProviderUtils.safeMsg(e);
     }
 }

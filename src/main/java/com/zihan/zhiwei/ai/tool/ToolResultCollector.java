@@ -2,6 +2,7 @@ package com.zihan.zhiwei.ai.tool;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import org.springframework.web.context.annotation.RequestScope;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -9,9 +10,13 @@ import java.util.List;
 /**
  * D12: 工具调用结果收集器。
  * Agent 循环中每调一次工具就把结果收集起来，最后一次性拼入 prompt / 卡片。
+ *
+ * 修复 P0-1：使用 @RequestScope 确保每次 HTTP 请求拥有独立的实例，
+ * 避免多用户并发时共享同一 results 列表导致数据泄漏。
  */
 @Slf4j
 @Component
+@RequestScope
 public class ToolResultCollector {
 
     private final List<ToolCallResult> results = new ArrayList<>();

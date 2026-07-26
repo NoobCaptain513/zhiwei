@@ -8,6 +8,7 @@ import com.zihan.zhiwei.pojo.dto.RouterStatus;
 import com.zihan.zhiwei.pojo.dto.UsageSummary;
 import com.zihan.zhiwei.service.SystemMonitorService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -18,6 +19,7 @@ import java.util.List;
 /**
  * 系统监控服务实现。
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class SystemMonitorServiceImpl implements SystemMonitorService {
@@ -37,12 +39,14 @@ public class SystemMonitorServiceImpl implements SystemMonitorService {
 
     @Override
     public UsageSummary usageSummary() {
+        // P2-18 修复：标注为占位符实现，待接入实际 token/cost 统计
+        log.warn("[SystemMonitor] usageSummary 返回占位符数据，待接入实际用量统计");
         ProviderMetrics.Snapshot snapshot = providerMetrics.snapshot(defaultProvider);
         long totalCalls = snapshot != null ? snapshot.totalCalls() : 0;
         return UsageSummary.builder()
                 .totalRequests(totalCalls)
-                .totalTokens(0)
-                .estimatedCost(BigDecimal.ZERO)
+                .totalTokens(-1)  // -1 表示未统计，避免 0 误导
+                .estimatedCost(BigDecimal.valueOf(-1))
                 .lastUpdatedAt(java.time.LocalDateTime.now().format(
                         java.time.format.DateTimeFormatter.ISO_LOCAL_DATE_TIME))
                 .build();
@@ -60,6 +64,8 @@ public class SystemMonitorServiceImpl implements SystemMonitorService {
 
     @Override
     public RateLimitStatus rateLimitStatus() {
+        // P2-18 修复：标注为占位符实现，待接入实际限流统计
+        log.warn("[SystemMonitor] rateLimitStatus 返回占位符数据，待接入实际限流统计");
         return RateLimitStatus.builder()
                 .enabled(false)
                 .limitPerMinute(60)

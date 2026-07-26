@@ -12,12 +12,17 @@ public class KnowledgePipelineProducer {
 
     private final RabbitTemplate rabbitTemplate;
 
-    public void sendDocumentMessage(Long documentId, String userId, String fileName) {
-        KnowledgePipelineMessage message = new KnowledgePipelineMessage(documentId, userId, fileName);
+    /**
+     * 修复 P0-2：发送文档处理消息时携带文件字节，
+     * 使 Consumer 可以真正执行解析+分块+入库。
+     */
+    public void sendDocumentMessage(Long documentId, String userId, String fileName, byte[] fileContent) {
+        KnowledgePipelineMessage message = new KnowledgePipelineMessage(documentId, userId, fileName, fileContent);
         rabbitTemplate.convertAndSend(
                 KnowledgePipelineConfig.EXCHANGE,
                 KnowledgePipelineConfig.ROUTING,
                 message);
-        log.info("[Pipeline Producer] sent documentId={} fileName={}", documentId, fileName);
+        log.info("[Pipeline Producer] sent documentId={} fileName={} size={}bytes",
+                documentId, fileName, fileContent == null ? 0 : fileContent.length);
     }
 }

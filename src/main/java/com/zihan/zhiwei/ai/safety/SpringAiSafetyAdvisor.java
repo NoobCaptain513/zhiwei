@@ -6,6 +6,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 请求级安全约束（D22）。
@@ -30,6 +31,14 @@ public class SpringAiSafetyAdvisor {
 
     /** 用户请求计数器（滑动窗口简化版：按分钟统计） */
     private final Map<String, long[]> requestCounts = new ConcurrentHashMap<>();
+
+    /**
+     * P1-4 修复：定时清理过期用户条目，防止 ConcurrentHashMap 无限增长导致内存泄漏。
+     * 使用 AtomicInteger 计数，每 100 次请求触发一次清理。
+     */
+    private final AtomicInteger cleanupCounter = new AtomicInteger(0);
+    private static final int CLEANUP_INTERVAL = 100;
+    private static final long EXPIRE_MILLIS = 600_000; // 10 分钟未活动视为过期
 
     /**
      * 综合安全检查。
@@ -59,6 +68,11 @@ public class SpringAiSafetyAdvisor {
     }
 
     private String checkRateLimit(String userId) {
+        // P1-4 修复：每 100 次请求清理一次超过 10 分钟未活动的过期条目
+        if (cleanupCounter.incrementAndGet() % CLEANUP_INTERVAL == 0) {
+            evictExpired();
+        }
+
         long now = System.currentTimeMillis();
         long windowStart = now - 60_000; // 1 分钟窗口
 
@@ -78,5 +92,21 @@ public class SpringAiSafetyAdvisor {
             return "请求过于频繁，每分钟最多 " + MAX_REQUESTS_PER_MINUTE + " 次";
         }
         return null;
+    }
+
+    /**
+     * P1-4 修复：移除超过 EXPIRE_MILLIS 末活动的用户条目。
+     */
+    private void evictExpired() {
+        long cutoff = System.currentTimeMillis() - EXPIRE_MILLIS;
+        int before = requestCounts.size();
+        requestCounts.entrySet().removeIf(entry -> {
+            long[] timestamps = entry.getValue();
+            return timestamps.length == 0 || timestamps[timestamps.length - 1] < cutoff;
+        });
+        int after = requestCounts.size();
+        if (before != after) {
+            log.debug("[Safety] evicted {} expired entries, remaining {}", before - after, after);
+        }
     }
 }

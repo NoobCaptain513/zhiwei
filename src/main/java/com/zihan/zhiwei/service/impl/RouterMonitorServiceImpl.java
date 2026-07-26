@@ -76,10 +76,21 @@ public class RouterMonitorServiceImpl implements RouterMonitorService {
         ProviderMetrics.Snapshot metrics = providerMetrics.snapshot(providerName);
         ProviderHealth health = findHealth(healthMonitor.snapshot(), providerName);
 
-        // 熔断器状态
-        CircuitBreaker cb = circuitBreakerRegistry.circuitBreaker(providerName);
-        CircuitBreaker.State cbState = cb.getState();
-        float cbFailureRate = cb.getMetrics().getFailureRate();
+        // 熔断器状态（P2-14 修复：获取 CircuitBreaker 失败时视为 CLOSED）
+        CircuitBreaker.State cbState;
+        float cbFailureRate;
+        float cbFailureRateThreshold;
+        try {
+            CircuitBreaker cb = circuitBreakerRegistry.circuitBreaker(providerName);
+            cbState = cb.getState();
+            cbFailureRate = cb.getMetrics().getFailureRate();
+            cbFailureRateThreshold = cb.getCircuitBreakerConfig().getFailureRateThreshold();
+        } catch (Exception e) {
+            log.debug("[RouterMonitor] circuit breaker error for provider={}: {}, treating as CLOSED", providerName, e.getMessage());
+            cbState = CircuitBreaker.State.CLOSED;
+            cbFailureRate = 0f;
+            cbFailureRateThreshold = 50f; // 默认 50%
+        }
 
         // 最近健康事件 → 决策日志
         List<RouterMetricsDetail.DecisionLog> decisions = new ArrayList<>();
@@ -112,7 +123,7 @@ public class RouterMonitorServiceImpl implements RouterMonitorService {
                 .failureCalls(metrics != null ? metrics.failureCalls() : 0)
                 .successRate(metrics != null ? metrics.successRate() : 0)
                 .circuitBreakerState(cbState.name())
-                .failureRateThreshold(cb.getCircuitBreakerConfig().getFailureRateThreshold())
+                .failureRateThreshold(cbFailureRateThreshold)
                 .currentFailureRate(cbFailureRate)
                 .recentDecisions(decisions)
                 .build();

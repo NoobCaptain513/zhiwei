@@ -1,5 +1,6 @@
 package com.zihan.zhiwei.ai.stream;
 
+import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -7,6 +8,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import java.io.IOException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * D15: SSE 流式传输通用组件。
@@ -95,6 +97,25 @@ public class AiStreamAdvice {
 
     private static String nvl(String s) {
         return s == null ? "" : s;
+    }
+
+    /**
+     * P1-7 修复：应用关闭时优雅关闭 CachedThreadPool，
+     * 避免线程泄漏导致进程无法正常退出。
+     */
+    @PreDestroy
+    public void shutdown() {
+        log.info("[SSE] shutting down executor...");
+        executor.shutdown();
+        try {
+            if (!executor.awaitTermination(10, TimeUnit.SECONDS)) {
+                log.warn("[SSE] executor did not terminate in time, force shutdown");
+                executor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            executor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 
     @FunctionalInterface

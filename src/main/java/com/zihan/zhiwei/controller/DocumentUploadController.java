@@ -1,5 +1,7 @@
 package com.zihan.zhiwei.controller;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.zihan.zhiwei.ai.knowledge.DocumentParseService;
 import com.zihan.zhiwei.ai.knowledge.DocumentParser;
 import com.zihan.zhiwei.ai.knowledge.SmartChunker;
@@ -66,7 +68,9 @@ public class DocumentUploadController {
 
         log.info("[Upload] document created id={} file={}", doc.getId(), fileName);
 
-        pipelineProducer.sendDocumentMessage(doc.getId(), userId, fileName);
+        // P0-2 修复：读取文件字节携带在 MQ 消息中，使 Consumer 可执行异步处理
+        byte[] fileBytes = file.getBytes();
+        pipelineProducer.sendDocumentMessage(doc.getId(), userId, fileName, fileBytes);
 
         int totalChunks = 0;
         try {
@@ -142,13 +146,16 @@ public class DocumentUploadController {
     }
 
     @GetMapping("/documents")
-    @Operation(summary = "文档列表")
-    public Result<List<Map<String, Object>>> documents(
+    @Operation(summary = "文档列表（P2-19 修复：接入 MyBatis-Plus 真正分页）")
+    public Result<Map<String, Object>> documents(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        var docs = documentMapper.selectList(null);
+        Page<KnowledgeDocument> p = new Page<>(page + 1, size); // MyBatis-Plus 页码从 1 开始
+        var pageResult = documentMapper.selectPage(p,
+                new LambdaQueryWrapper<KnowledgeDocument>()
+                        .orderByDesc(KnowledgeDocument::getCreateTime));
         List<Map<String, Object>> list = new ArrayList<>();
-        for (KnowledgeDocument d : docs) {
+        for (KnowledgeDocument d : pageResult.getRecords()) {
             Map<String, Object> map = new HashMap<>();
             map.put("id", d.getId());
             map.put("fileName", d.getFileName());
@@ -158,7 +165,11 @@ public class DocumentUploadController {
             map.put("createTime", d.getCreateTime());
             list.add(map);
         }
-        return Result.ok(list);
+        return Result.ok(Map.of(
+                "total", pageResult.getTotal(),
+                "page", page,
+                "size", size,
+                "records", list));
     }
 
     public record ParseTextRequest(Long documentId, String sourceName, @NotBlank String content) {}

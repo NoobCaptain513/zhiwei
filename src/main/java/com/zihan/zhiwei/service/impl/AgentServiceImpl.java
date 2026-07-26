@@ -1,5 +1,6 @@
 package com.zihan.zhiwei.service.impl;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zihan.zhiwei.ai.intent.AgentIntent;
 import com.zihan.zhiwei.ai.intent.AgentIntentAnalyzer;
 import com.zihan.zhiwei.ai.prompt.AiPromptService;
@@ -28,6 +29,7 @@ import com.zihan.zhiwei.service.AgentService;
 import com.zihan.zhiwei.service.ConversationService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -53,11 +55,22 @@ public class AgentServiceImpl implements AgentService {
     private final AiPromptService promptService;
     private final RagMessageAugmentor ragMessageAugmentor;
     private final RagContextBuilder ragContextBuilder;
-    private final OpsAgentToolService opsAgentToolService;
+    /**
+     * P1-6 修复：改为可选注入，Mock 服务未启用时（zhiwei.ai.tool.mock-enabled != true）
+     * 不会影响应用启动，simulateToolCalls 中做 null 检查。
+     */
+    @Autowired(required = false)
+    private OpsAgentToolService opsAgentToolService;
     private final ToolResultCollector toolResultCollector;
     private final AgentFallbackHandler fallbackHandler;
     private final AgentReplyService replyService;
     private final AgentClarificationService clarificationService;
+
+    /**
+     * P0-3 修复：注入 ObjectMapper 用于 JSON 序列化卡片数据，
+     * 替代原来 Result.ok(...).toString() 产生的非 JSON 格式。
+     */
+    private final ObjectMapper objectMapper;
 
     // ==================== D14+D29: 同步 Agent ====================
 
@@ -183,7 +196,8 @@ public class AgentServiceImpl implements AgentService {
             onToken.accept(clarifyText);
             if (clarifyReply.getCards() != null && !clarifyReply.getCards().isEmpty()) {
                 try {
-                    String cardJson = com.zihan.zhiwei.common.Result.ok(clarifyReply.getCards()).toString();
+                    // P0-3 修复：使用 Jackson 序列化为合法 JSON，替代 toString()
+                    String cardJson = objectMapper.writeValueAsString(clarifyReply.getCards());
                     onCard.accept(cardJson);
                 } catch (Exception e) {
                     log.warn("[StreamAgent] clarify card failed: {}", e.getMessage());
@@ -239,7 +253,8 @@ public class AgentServiceImpl implements AgentService {
 
         if (reply.getCards() != null && !reply.getCards().isEmpty()) {
             try {
-                String cardJson = com.zihan.zhiwei.common.Result.ok(reply.getCards()).toString();
+                // P0-3 修复：使用 Jackson 序列化为合法 JSON，替代 toString()
+                String cardJson = objectMapper.writeValueAsString(reply.getCards());
                 onCard.accept(cardJson);
             } catch (Exception e) {
                 log.warn("[StreamAgent] send card failed: {}", e.getMessage());
@@ -247,14 +262,14 @@ public class AgentServiceImpl implements AgentService {
         }
 
         String encodedContent = replyService.encode(reply);
-        Message assistantMessage = conversationService.saveMessage(
-                conversation.getId(), "assistant", encodedContent);
 
         ProviderChatResponse providerResponse = new ProviderChatResponse(
                 modelText, streamResult.model(), streamResult.provider(),
                 streamResult.promptTokens(), streamResult.completionTokens(), streamResult.totalTokens());
-        usageRecorder.record(conversation.getId(), assistantMessage.getId(),
-                providerResponse, "agent", 0L, false);
+
+        // P2-12 修复：将助手消息保存 + usage 记录抽为事务原子方法
+        Message assistantMessage = saveStreamCompletion(
+                conversation.getId(), encodedContent, providerResponse, 0L, false);
 
         log.info("[StreamAgent] done intent={} provider={} cards={} tokens={}",
                 primaryIntent, streamResult.provider(),
@@ -276,7 +291,26 @@ public class AgentServiceImpl implements AgentService {
 
     // ==================== 私有方法 ====================
 
+    /**
+     * P2-12 修复：流式完成后，在事务中原子地保存助手消息 + 记录 usage。
+     * 不与长时间的 SSE 流转共享事务，避免长事务锁表。
+     */
+    @Transactional
+    private Message saveStreamCompletion(Long conversationId, String content,
+                                          ProviderChatResponse providerResponse,
+                                          long latencyMs, boolean degraded) {
+        Message assistantMessage = conversationService.saveMessage(
+                conversationId, "assistant", content);
+        usageRecorder.record(conversationId, assistantMessage.getId(),
+                providerResponse, "agent", latencyMs, degraded);
+        return assistantMessage;
+    }
+
     private List<ToolCallResult> simulateToolCalls(String intent, String message) {
+        // P1-6 修复：Mock 工具服务未注入时直接返回空列表
+        if (opsAgentToolService == null) {
+            return List.of();
+        }
         List<ToolCallResult> results = new ArrayList<>();
         switch (intent) {
             case AgentIntent.FAULT -> {

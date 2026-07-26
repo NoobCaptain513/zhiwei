@@ -3,8 +3,6 @@ package com.zihan.zhiwei.ai.knowledge;
 import com.zihan.zhiwei.common.exception.BusinessException;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.tika.Tika;
-import org.apache.tika.mime.MimeType;
-import org.apache.tika.mime.MimeTypes;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;

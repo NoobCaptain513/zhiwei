@@ -32,10 +32,11 @@ public class HealthEventLog {
                 event.getProvider(), event.isHealthy(), event.isColdStart(), event.getLatencyMs());
     }
 
-    /** 获取最近 N 条事件 */
+    /** 获取最近 N 条事件（P2-15 修复：直接构造新集合，避免 subList 视图泄漏临时 list） */
     public List<HealthEvent> recent(int limit) {
         int n = Math.min(limit, events.size());
-        return new ArrayList<>(events).subList(events.size() - n, events.size());
+        int from = events.size() - n;
+        return events.stream().skip(from).limit(n).collect(Collectors.toList());
     }
 
     /** 获取最近事件 */
