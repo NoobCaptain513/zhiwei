@@ -1,0 +1,9 @@
+FROM eclipse-temurin:21-jre-alpine
+WORKDIR /app
+COPY target/zhiwei-*.jar app.jar
+EXPOSE 8081
+HEALTHCHECK --interval=10s --timeout=3s --retries=3 \
+  CMD wget -qO- http://localhost:8081/health/ready || exit 1
+ENTRYPOINT ["java", "-jar", "app.jar", \
+  "--spring.profiles.active=mcp", \
+  "--server.port=8081"]

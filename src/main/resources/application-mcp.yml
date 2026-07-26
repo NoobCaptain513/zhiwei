@@ -1,0 +1,17 @@
+# 独立 MCP Server 进程配置
+# 启动: java -jar zhiwei.jar --spring.profiles.active=mcp --server.port=8081
+
+server:
+  port: 8081
+
+spring:
+  main:
+    lazy-initialization: true
+
+zhiwei:
+  mcp:
+    mode: standalone
+
+logging:
+  level:
+    com.zihan.zhiwei.ai.mcp: INFO
