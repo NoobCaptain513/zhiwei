@@ -1,9 +1,11 @@
 package com.zihan.zhiwei.ai.rag;
 
 import com.zihan.zhiwei.ai.embedding.CompatibleEmbeddingClient;
+import com.zihan.zhiwei.ai.knowledge.TokenCounter;
 import com.zihan.zhiwei.ai.rag.dto.QueryRewriteResult;
 import com.zihan.zhiwei.ai.rag.dto.RagHit;
 import com.zihan.zhiwei.common.exception.BusinessException;
+import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -17,11 +19,20 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.regex.Pattern;
 
 /**
  * D10+D30+D31: RAG 核心。
  * 查询改写 → 双通道召回 → RRF 融合 → 可选精排 → topK。
+ * <p>
+ * FIX-5: 多子查询由串行 for 循环改为虚拟线程并行检索。
+ * FIX-8(配套): 新增 upsertChunksBatch() 批量 embedding + 批量入库。
+ * FIX-9: token 计数从 content.length()/2 改为 TokenCounter（jtokkit BPE）。
  */
 @Slf4j
 @Service
@@ -37,6 +48,10 @@ public class AiRagService {
     private final RagReranker reranker;
     private final QueryRewriter queryRewriter;
     private final MultiQueryAggregator multiQueryAggregator;
+    private final TokenCounter tokenCounter;
+
+    /** FIX-5: 子查询并行执行器 */
+    private final ExecutorService subQueryExecutor = Executors.newVirtualThreadPerTaskExecutor();
 
     @Value("${zhiwei.ai.rag.candidate-k:20}")
     private int defaultCandidateK;
@@ -53,18 +68,28 @@ public class AiRagService {
     @Value("${zhiwei.ai.rag.keyword-weight:0.5}")
     private double keywordWeight;
 
+    @Value("${zhiwei.ai.rag.sub-query-timeout-ms:8000}")
+    private long subQueryTimeoutMs;
+
     public AiRagService(CompatibleEmbeddingClient embeddingClient,
                         PgVectorKnowledgeRepository repository,
                         RrfFusion rrfFusion,
                         RagReranker reranker,
                         QueryRewriter queryRewriter,
-                        MultiQueryAggregator multiQueryAggregator) {
+                        MultiQueryAggregator multiQueryAggregator,
+                        TokenCounter tokenCounter) {
         this.embeddingClient = embeddingClient;
         this.repository = repository;
         this.rrfFusion = rrfFusion;
         this.reranker = reranker;
         this.queryRewriter = queryRewriter;
         this.multiQueryAggregator = multiQueryAggregator;
+        this.tokenCounter = tokenCounter;
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        subQueryExecutor.close();
     }
 
     // ==================== D31: 带查询改写的检索 ====================
@@ -89,20 +114,42 @@ public class AiRagService {
             return singleQuerySearch(queries.get(0), top, cand);
         }
 
-        Map<String, List<RagHit>> resultsMap = new LinkedHashMap<>();
+        // FIX-5: 并行子查询检索
+        final int fTop = top;
+        final int fCand = cand;
+        Map<String, Future<List<RagHit>>> futures = new LinkedHashMap<>();
         for (String q : queries) {
+            futures.put(q, subQueryExecutor.submit(() -> singleQuerySearch(q, fTop, fCand)));
+        }
+
+        Map<String, List<RagHit>> resultsMap = new LinkedHashMap<>();
+        long deadline = System.currentTimeMillis() + Math.max(1000, subQueryTimeoutMs);
+        for (Map.Entry<String, Future<List<RagHit>>> entry : futures.entrySet()) {
+            long remaining = deadline - System.currentTimeMillis();
             try {
-                resultsMap.put(q, singleQuerySearch(q, top, cand));
+                List<RagHit> hits = entry.getValue()
+                        .get(Math.max(1, remaining), TimeUnit.MILLISECONDS);
+                resultsMap.put(entry.getKey(), hits);
+            } catch (TimeoutException e) {
+                entry.getValue().cancel(true);
+                log.warn("[RAG] sub-query timeout: q='{}'", entry.getKey());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                entry.getValue().cancel(true);
+                log.warn("[RAG] sub-query interrupted: q='{}'", entry.getKey());
+                break;
             } catch (Exception e) {
-                log.warn("[RAG] sub-query failed: q='{}' err={}", q, e.getMessage());
+                log.warn("[RAG] sub-query failed: q='{}' err={}", entry.getKey(),
+                        e.getCause() != null ? e.getCause().getMessage() : e.getMessage());
             }
         }
+
         if (resultsMap.isEmpty()) {
             return singleQuerySearch(query, top, cand);
         }
         List<RagHit> aggregated = multiQueryAggregator.aggregate(resultsMap, top);
-        log.info("[RAG] multi-query: original='{}' subQ={} merged={}",
-                query, queries.size(), aggregated.size());
+        log.info("[RAG] multi-query(parallel): original='{}' subQ={} ok={} merged={}",
+                query, queries.size(), resultsMap.size(), aggregated.size());
         return aggregated;
     }
 
@@ -168,11 +215,40 @@ public class AiRagService {
             throw new BusinessException("content 不能为空");
         }
         float[] vec = embeddingClient.embed(content);
-        int tokens = Math.max(1, content.length() / 2);
+        // FIX-9: 真实 BPE 计数替代 content.length()/2
+        int tokens = Math.max(1, tokenCounter.count(content));
         long id = repository.insert(documentId, sourceId, title, content, vec, tokens);
         log.info("[RAG] upsert chunk id={} documentId={} sourceId={}", id, documentId, sourceId);
         return id;
     }
+
+    /**
+     * FIX-8(配套): 批量写入。
+     */
+    public int upsertChunksBatch(Long documentId, List<ChunkPayload> payloads) {
+        if (payloads == null || payloads.isEmpty()) {
+            return 0;
+        }
+        List<String> texts = payloads.stream().map(ChunkPayload::content).toList();
+        List<float[]> vectors = embeddingClient.embedBatch(texts);
+        if (vectors.size() != payloads.size()) {
+            throw new BusinessException("embedding 批量返回数量不匹配: "
+                    + vectors.size() + " != " + payloads.size());
+        }
+        List<PgVectorKnowledgeRepository.InsertRow> rows = new ArrayList<>(payloads.size());
+        for (int i = 0; i < payloads.size(); i++) {
+            ChunkPayload p = payloads.get(i);
+            rows.add(new PgVectorKnowledgeRepository.InsertRow(
+                    documentId, p.sourceId(), p.title(), p.content(),
+                    vectors.get(i), Math.max(1, tokenCounter.count(p.content()))));
+        }
+        int inserted = repository.batchInsert(rows);
+        log.info("[RAG] batch upsert documentId={} chunks={} inserted={}",
+                documentId, payloads.size(), inserted);
+        return inserted;
+    }
+
+    public record ChunkPayload(String sourceId, String title, String content) {}
 
     public long count() {
         return repository.count();
@@ -214,4 +290,6 @@ public class AiRagService {
         if (Double.isNaN(v)) return 0.0;
         return Math.max(0.0, Math.min(1.0, v));
     }
+
+
 }

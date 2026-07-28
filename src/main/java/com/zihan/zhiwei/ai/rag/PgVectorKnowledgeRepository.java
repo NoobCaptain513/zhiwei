@@ -1,17 +1,21 @@
 package com.zihan.zhiwei.ai.rag;
 
+import com.pgvector.PGvector;
 import com.zihan.zhiwei.ai.rag.dto.KnowledgeChunk;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
@@ -21,6 +25,10 @@ import java.util.regex.Pattern;
 
 /**
  * D10: pgvector 知识库仓储（余弦检索 + 关键词检索）
+ * <p>
+ * FIX-1: searchByKeyword 打分下推到 SQL。
+ * FIX-8a: 向量传参从字符串字面量改为 PGvector 类型化对象。
+ * FIX-8b: 新增 batchInsert() 批量写入。
  */
 @Slf4j
 @Repository
@@ -44,6 +52,7 @@ public class PgVectorKnowledgeRepository {
 
     /**
      * D23: 支持指定向量列名（embedding / embedding_ollama）
+     * FIX-8a: PGvector 类型化传参
      */
     public long insert(Long documentId,
                        String sourceId,
@@ -55,7 +64,7 @@ public class PgVectorKnowledgeRepository {
         String sql = """
                 INSERT INTO ai_knowledge_chunk
                     (document_id, source_id, title, content, %s, token_count)
-                VALUES (?, ?, ?, ?, ?::vector, ?)
+                VALUES (?, ?, ?, ?, ?, ?)
                 RETURNING id
                 """.formatted(column);
         Long id = jdbcTemplate.queryForObject(
@@ -65,11 +74,50 @@ public class PgVectorKnowledgeRepository {
                 sourceId,
                 title,
                 content,
-                toVectorLiteral(embedding),
+                new PGvector(embedding),
                 tokenCount
         );
         return id == null ? 0L : id;
     }
+
+    /**
+     * FIX-8b: 批量写入，一次网络往返。
+     */
+    public int batchInsert(List<InsertRow> rows) {
+        return batchInsert(rows, "embedding");
+    }
+
+    public int batchInsert(List<InsertRow> rows, String column) {
+        if (rows == null || rows.isEmpty()) {
+            return 0;
+        }
+        String sql = """
+                INSERT INTO ai_knowledge_chunk
+                    (document_id, source_id, title, content, %s, token_count)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """.formatted(column);
+        int[] counts = jdbcTemplate.batchUpdate(sql, new BatchPreparedStatementSetter() {
+            @Override
+            public void setValues(PreparedStatement ps, int i) throws SQLException {
+                InsertRow row = rows.get(i);
+                ps.setObject(1, row.documentId());
+                ps.setString(2, row.sourceId());
+                ps.setString(3, row.title());
+                ps.setString(4, row.content());
+                ps.setObject(5, new PGvector(row.embedding()));
+                ps.setInt(6, row.tokenCount());
+            }
+
+            @Override
+            public int getBatchSize() {
+                return rows.size();
+            }
+        });
+        return Arrays.stream(counts).map(c -> Math.max(c, 0)).sum();
+    }
+
+    public record InsertRow(Long documentId, String sourceId, String title,
+                            String content, float[] embedding, int tokenCount) {}
 
     /** 余弦相似度召回：score = 1 - cosine_distance */
     public List<ScoredChunk> searchByCosine(float[] queryEmbedding, int candidateK) {
@@ -77,24 +125,24 @@ public class PgVectorKnowledgeRepository {
     }
 
     /**
-     * D23: 支持指定向量列名（embedding / embedding_ollama）
+     * D23: 支持指定向量列名
+     * FIX-8a: PGvector 传参
      */
     public List<ScoredChunk> searchByCosine(float[] queryEmbedding, int candidateK, String column) {
         int k = Math.max(1, candidateK);
         String sql = """
                 SELECT id, document_id, source_id, title, content, token_count, create_time,
-                       (1 - (%s <=> ?::vector)) AS vector_score
+                       (1 - (%s <=> ?)) AS vector_score
                 FROM ai_knowledge_chunk
-                ORDER BY %s <=> ?::vector
+                ORDER BY %s <=> ?
                 LIMIT ?
                 """.formatted(column, column);
-        String literal = toVectorLiteral(queryEmbedding);
-        return jdbcTemplate.query(sql, new ScoredChunkMapper(), literal, literal, k);
+        PGvector vec = new PGvector(queryEmbedding);
+        return jdbcTemplate.query(sql, new ScoredChunkMapper(), vec, vec, k);
     }
 
     /**
-     * D30: 关键词检索。
-     * 查询分词后用 ILIKE 匹配 content，按匹配词占比打分。
+     * FIX-1: 关键词检索（打分下推版）。
      */
     public List<ScoredChunk> searchByKeyword(String query, int limit) {
         Set<String> tokens = tokenize(query);
@@ -112,19 +160,33 @@ public class PgVectorKnowledgeRepository {
             return List.of();
         }
 
+        int n = searchTokens.size();
+        StringBuilder scoreExpr = new StringBuilder();
         StringBuilder where = new StringBuilder();
-        List<Object> params = new ArrayList<>();
-        for (int i = 0; i < searchTokens.size(); i++) {
-            if (i > 0) where.append(" OR ");
+        List<Object> params = new ArrayList<>(n * 2 + 1);
+
+        for (int i = 0; i < n; i++) {
+            if (i > 0) {
+                scoreExpr.append(" + ");
+            }
+            scoreExpr.append("(CASE WHEN content ILIKE ? THEN 1 ELSE 0 END)");
+            params.add(likePattern(searchTokens.get(i)));
+        }
+        for (int i = 0; i < n; i++) {
+            if (i > 0) {
+                where.append(" OR ");
+            }
             where.append("content ILIKE ?");
-            params.add("%" + searchTokens.get(i) + "%");
+            params.add(likePattern(searchTokens.get(i)));
         }
 
-        String sql = "SELECT id, document_id, source_id, title, content, token_count, create_time"
+        String sql = "SELECT id, document_id, source_id, title, content, token_count, create_time, ("
+                + scoreExpr + ") AS match_count"
                 + " FROM ai_knowledge_chunk WHERE " + where
-                + " ORDER BY id DESC LIMIT ?";
-        params.add(limit);
+                + " ORDER BY match_count DESC, id DESC LIMIT ?";
+        params.add(Math.max(1, limit));
 
+        final int total = n;
         RowMapper<ScoredChunk> keywordMapper = (rs, rowNum) -> {
             Timestamp ts = rs.getTimestamp("create_time");
             KnowledgeChunk chunk = new KnowledgeChunk(
@@ -136,20 +198,19 @@ public class PgVectorKnowledgeRepository {
                     rs.getInt("token_count"),
                     ts == null ? null : ts.toLocalDateTime()
             );
-            String content = rs.getString("content");
-            int matched = 0;
-            if (content != null) {
-                String lowerContent = content.toLowerCase(Locale.ROOT);
-                for (String t : searchTokens) {
-                    if (lowerContent.contains(t.toLowerCase(Locale.ROOT))) {
-                        matched++;
-                    }
-                }
-            }
-            double score = (double) matched / searchTokens.size();
+            double score = rs.getInt("match_count") / (double) total;
             return new ScoredChunk(chunk, score);
         };
         return jdbcTemplate.query(sql, keywordMapper, params.toArray());
+    }
+
+    /** FIX-1: 转义 LIKE 通配符 */
+    private static String likePattern(String token) {
+        String escaped = token
+                .replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_");
+        return "%" + escaped + "%";
     }
 
     public long count() {
@@ -161,6 +222,7 @@ public class PgVectorKnowledgeRepository {
         jdbcTemplate.update("DELETE FROM ai_knowledge_chunk WHERE document_id = ?", documentId);
     }
 
+    /** 保留：调试用途 / 兼容既有测试引用 */
     public static String toVectorLiteral(float[] embedding) {
         if (embedding == null || embedding.length == 0) {
             throw new IllegalArgumentException("embedding empty");

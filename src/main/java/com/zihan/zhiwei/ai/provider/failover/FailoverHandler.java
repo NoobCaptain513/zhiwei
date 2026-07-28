@@ -4,6 +4,7 @@ import com.zihan.zhiwei.ai.provider.ModelProvider;
 import com.zihan.zhiwei.ai.provider.ProviderMetrics;
 import com.zihan.zhiwei.ai.provider.ProviderUtils;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatRequest;
+import com.zihan.zhiwei.ai.provider.dto.ProviderChatResponse;
 import com.zihan.zhiwei.ai.provider.health.FailoverEventLog;
 import com.zihan.zhiwei.ai.provider.probe.FirstPacketProbeConfig;
 import com.zihan.zhiwei.ai.provider.probe.ModelProbeService;
@@ -29,10 +30,8 @@ import java.util.stream.Collectors;
 
 /**
  * D8: 故障降级
- * - 每个 Provider 一把 CircuitBreaker（CLOSED / OPEN / HALF_OPEN）
- * - 降级链：spring-ai-alibaba → langchain4j-openai → native-dashscope → ollama
- * - chat 幂等：同一 Provider 失败后再重试 1 次；切换 Provider 不算重试次数
- * - D28: 首包探测 — 在执行链之前并行探测前 N 个候选，探测失败的直接跳过
+ * <p>
+ * FIX-3: 重试前先经 ProviderUtils.isRetryableOnSameProvider() 判定异常类别。
  */
 @Slf4j
 @Component
@@ -82,7 +81,7 @@ public class FailoverHandler {
     public FailoverResult execute(String primaryProvider, ProviderChatRequest request) {
         List<String> chain = buildChain(primaryProvider);
 
-        // D28: 首包探测 — 探测前 N 个候选
+        // D28: 首包探测
         Set<String> probeDead = preProbe(chain);
 
         List<FailoverEvent> events = new ArrayList<>();
@@ -96,7 +95,6 @@ public class FailoverHandler {
                 continue;
             }
 
-            // P2-14 修复：未注册的 CircuitBreaker 不阻塞降级链
             CircuitBreaker cb;
             try {
                 cb = circuitBreakerRegistry.circuitBreaker(name);
@@ -112,7 +110,6 @@ public class FailoverHandler {
                 continue;
             }
 
-            // D28: 探测失败直接跳过
             if (probeDead.contains(name)) {
                 log.warn("[Failover] probe dead, skip provider={}", name);
                 if (i + 1 < chain.size()) {
@@ -130,10 +127,6 @@ public class FailoverHandler {
                     providerMetrics.recordSuccess(name, latency);
 
                     boolean degraded = !name.equals(primaryProvider);
-                    if (degraded) {
-                        log.info("[Failover] degraded primary={} actual={} events={}",
-                                primaryProvider, name, events.size());
-                    }
                     if (degraded && !events.isEmpty()) {
                         for (FailoverEvent evt : events) {
                             failoverEventLog.record(evt);
@@ -150,16 +143,21 @@ public class FailoverHandler {
                     long latency = System.currentTimeMillis() - start;
                     providerMetrics.recordFailure(name, latency);
                     lastError = e;
-                    log.warn("[Failover] provider={} attempt={}/{} failed: {}",
-                            name, attempt, attempts, e.getMessage());
 
-                    if (attempt < attempts) {
+                    // FIX-3: 确定性失败不在同 Provider 重试
+                    boolean retryable = ProviderUtils.isRetryableOnSameProvider(e);
+                    log.warn("[Failover] provider={} attempt={}/{} failed retryable={}: {}",
+                            name, attempt, attempts, retryable, e.getMessage());
+
+                    if (retryable && attempt < attempts) {
                         continue;
                     }
                     if (i + 1 < chain.size()) {
-                        events.add(FailoverEvent.of(name, chain.get(i + 1),
-                                e.getClass().getSimpleName() + ": " + safeMsg(e)));
+                        String reason = (retryable ? "" : "NON_RETRYABLE ")
+                                + e.getClass().getSimpleName() + ": " + safeMsg(e);
+                        events.add(FailoverEvent.of(name, chain.get(i + 1), reason));
                     }
+                    break;
                 }
             }
         }
@@ -168,9 +166,6 @@ public class FailoverHandler {
                 + (lastError != null ? lastError.getMessage() : "unknown"));
     }
 
-    /**
-     * P2-14 修复：CircuitBreaker 获取失败时返回 CLOSED（视为可用）。
-     */
     public CircuitBreaker.State stateOf(String provider) {
         try {
             return circuitBreakerRegistry.circuitBreaker(provider).getState();
@@ -184,9 +179,6 @@ public class FailoverHandler {
         return stateOf(provider) == CircuitBreaker.State.OPEN;
     }
 
-    /**
-     * D28: 首包预探测。并行探测链中前 N 个可用 Provider，返回探测失败的集合。
-     */
     private Set<String> preProbe(List<String> chain) {
         if (!probeService.isEnabled()) {
             return Collections.emptySet();
@@ -222,7 +214,6 @@ public class FailoverHandler {
         return chain;
     }
 
-    // P3-20 修复：委托给 ProviderUtils 统一管理
     private static String safeMsg(Exception e) {
         return ProviderUtils.safeMsg(e);
     }

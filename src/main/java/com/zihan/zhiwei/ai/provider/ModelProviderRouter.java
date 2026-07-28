@@ -20,6 +20,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -29,6 +30,8 @@ import java.util.stream.Collectors;
  * 按健康度 + 成功率 + 延迟 + 成本权重打分选出主 Provider，再经 FailoverHandler 降级执行。
  * D15: 新增 streamChatWithFailover() 支持流式降级。
  * D28: 流式路由集成首包探测，在 SSE 启动前过滤不可用 Provider。
+ * <p>
+ * FIX-2: 流式指标修正——TTFT + 完整失败记录。
  */
 @Slf4j
 @Component
@@ -49,7 +52,7 @@ public class ModelProviderRouter {
     @Value("${zhiwei.ai.router.latency-penalty-ms:2000}")
     private long latencyPenaltyMs;
 
-    // ==================== 同步路由（保持不变）====================
+    // ==================== 同步路由 ====================
 
     public ModelProvider route() {
         return route(defaultProvider);
@@ -85,13 +88,8 @@ public class ModelProviderRouter {
         return executeWithFailover(preferred, request).response();
     }
 
-    // ==================== D15+D28: 流式路由（带首包探测）====================
+    // ==================== D15+D28+FIX-2: 流式路由 ====================
 
-    /**
-     * D15+D28: 流式路由。
-     * 按打分排序后，先经首包探测过滤掉不可达的 Provider，
-     * 再依次尝试。一旦有 token 发出，失败不再降级。
-     */
     public StreamResult streamChatWithFailover(ProviderChatRequest request, Consumer<String> onToken) {
         return streamChatWithFailover(defaultProvider, request, onToken);
     }
@@ -103,7 +101,7 @@ public class ModelProviderRouter {
             throw new BusinessException("没有可用的 Provider");
         }
 
-        // D28: 首包探测过滤，记录被过滤掉的 Provider 事件
+        // D28: 首包探测过滤
         List<ModelProvider> filtered = probeService.filterAvailable(ranked);
         for (int i = 0; i < ranked.size(); i++) {
             if (!filtered.contains(ranked.get(i))) {
@@ -119,7 +117,10 @@ public class ModelProviderRouter {
                 ranked.size(), filtered.size());
 
         AtomicBoolean tokenSent = new AtomicBoolean(false);
+        // FIX-2: 记录首 token 到达时刻，用于计算 TTFT
+        AtomicLong firstTokenAt = new AtomicLong(-1L);
         Consumer<String> trackingOnToken = token -> {
+            firstTokenAt.compareAndSet(-1L, System.currentTimeMillis());
             tokenSent.set(true);
             onToken.accept(token);
         };
@@ -127,15 +128,26 @@ public class ModelProviderRouter {
         Exception lastError = null;
         for (int i = 0; i < filtered.size(); i++) {
             ModelProvider provider = filtered.get(i);
+            long attemptStart = System.currentTimeMillis();
+            firstTokenAt.set(-1L);
             try {
                 StreamResult result = provider.streamChat(request, trackingOnToken);
-                providerMetrics.recordSuccess(provider.name(), 0);
+                // FIX-2: 流式场景延迟口径 = TTFT
+                long ttft = firstTokenAt.get() > 0
+                        ? firstTokenAt.get() - attemptStart
+                        : System.currentTimeMillis() - attemptStart;
+                providerMetrics.recordSuccess(provider.name(), ttft);
                 return result;
             } catch (Exception e) {
+                long elapsed = System.currentTimeMillis() - attemptStart;
+                // FIX-2: 无论中断发生在首 token 前还是后，都要计入失败样本
+                providerMetrics.recordFailure(provider.name(), elapsed);
                 if (tokenSent.get()) {
+                    failoverEventLog.record(FailoverEvent.of(provider.name(), "none",
+                            "STREAM_INTERRUPTED_AFTER_FIRST_TOKEN: "
+                                    + e.getClass().getSimpleName() + ": " + safeMsg(e)));
                     throw new BusinessException("流式传输中断（" + provider.name() + "）: " + e.getMessage());
                 }
-                providerMetrics.recordFailure(provider.name(), 0);
                 lastError = e;
                 if (i + 1 < filtered.size()) {
                     failoverEventLog.record(FailoverEvent.of(provider.name(),
@@ -149,7 +161,7 @@ public class ModelProviderRouter {
                 + (lastError != null ? lastError.getMessage() : "unknown"));
     }
 
-    // ==================== 私有方法（保持不变）====================
+    // ==================== 私有方法 ====================
 
     private List<ModelProvider> rankCandidates(String preferred) {
         Map<String, ModelProvider> providerMap = providers.stream()
@@ -194,7 +206,6 @@ public class ModelProviderRouter {
 
     private record Scored(ModelProvider provider, double score) {}
 
-    // P3-20 修复：委托给 ProviderUtils 统一管理
     private static String safeMsg(Exception e) {
         return ProviderUtils.safeMsg(e);
     }

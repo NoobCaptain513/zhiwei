@@ -14,6 +14,10 @@ spring:
     url: jdbc:mysql://192.168.100.142:3306/zhiwei?useUnicode=true&characterEncoding=utf-8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
     user: root
     password: 123456
+  rabbitmq:
+    listener:
+      simple:
+        default-requeue-rejected: false
 
 
 mybatis-plus:
@@ -25,4 +29,36 @@ mybatis-plus:
       logic-delete-field: isDeleted
       logic-delete-value: 1
       logic-not-delete-value: 0
+
+# FIX-10: MQ 重试配置（必须配！否则毒消息 requeue 死循环）
+
+
+zhiwei:
+  ai:
+    rag:
+      sub-query-timeout-ms: 8000
+      rewrite-cache-size: 1000
+      rewrite-cache-ttl-seconds: 600
+    knowledge:
+      embed-batch-size: 16
+      mq:
+        retry-ttl-ms: 30000
+        max-retries: 3
+    safety:
+      judge:
+        enabled: true
+        model: qwen-turbo
+        fail-open: true
+        max-chars: 1500
+    health:
+      event-redis-size: 1000
+      event-redis-ttl-days: 7
+  security:
+    jwt:
+      enabled: false
+      secret: ${ZHIWEI_JWT_SECRET:changeme1234567890123456789012345}
+      ttl-minutes: 120
+      users:
+        admin: "{noop}admin123"
+        demo: "{noop}demo123"
 

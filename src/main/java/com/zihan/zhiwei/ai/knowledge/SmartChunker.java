@@ -9,12 +9,9 @@ import java.util.List;
 
 /**
  * 智能分块器：512 token + 64 重叠滑动窗口。
- *
- * 策略：
- * 1. 先按段落 / 换行 切分（保留自然边界）
- * 2. 对每段估算 token 数（中文 ≈ 1 字 ≈ 1.5 token，英文 ≈ 4 字符 ≈ 1 token）
- * 3. 超过 maxTokens 的段落再按字符滑动窗口切分
- * 4. 相邻块之间保留 overlapTokens 的重叠
+ * <p>
+ * FIX-9: 委托 TokenCounter（jtokkit BPE）进行真实计数，
+ * 滑动窗口的"token→字符"换算按该段落实际 chars/token 比例。
  */
 @Slf4j
 @Component
@@ -26,20 +23,17 @@ public class SmartChunker {
     @Value("${zhiwei.ai.knowledge.overlap-tokens:64}")
     private int overlapTokens = 64;
 
-    /**
-     * 将文档文本分块。
-     *
-     * @param text       原文
-     * @param documentId 文档 ID
-     * @param sourceFile 来源文件名
-     * @return 分块列表
-     */
+    private final TokenCounter tokenCounter;
+
+    public SmartChunker(TokenCounter tokenCounter) {
+        this.tokenCounter = tokenCounter;
+    }
+
     public List<DocumentChunk> chunk(String text, Long documentId, String sourceFile) {
         if (text == null || text.isBlank()) {
             return List.of();
         }
 
-        // 1. 按段落切分
         String[] paragraphs = text.split("\\n{2,}");
         List<String> rawSegments = new ArrayList<>();
         for (String para : paragraphs) {
@@ -49,22 +43,18 @@ public class SmartChunker {
             }
         }
 
-        // 2. 对每段估算 token，超长的再滑动窗口切分
         List<String> tokenSegments = new ArrayList<>();
         for (String seg : rawSegments) {
-            int estTokens = estimateTokens(seg);
-            if (estTokens <= maxTokens) {
+            int tokens = estimateTokens(seg);
+            if (tokens <= maxTokens) {
                 tokenSegments.add(seg);
             } else {
-                // 超长段落：按字符滑动窗口切分
                 tokenSegments.addAll(splitByWindow(seg));
             }
         }
 
-        // 3. 合并过短的相邻块（小于 maxTokens 的 1/3）
         List<String> merged = mergeShort(tokenSegments);
 
-        // 4. 组装 DocumentChunk
         List<DocumentChunk> chunks = new ArrayList<>();
         int offset = 0;
         for (int i = 0; i < merged.size(); i++) {
@@ -87,34 +77,16 @@ public class SmartChunker {
         return chunks;
     }
 
-    /**
-     * 简单 token 估算。
-     * 中文：1 字 ≈ 1 token（现代 tokenizer 通常 1~1.5）
-     * 英文：1 词 ≈ 1 token（约 4 字符）
-     * 混合：按字符类型加权
-     */
+    /** FIX-9: 委托 TokenCounter */
     public int estimateTokens(String text) {
-        if (text == null || text.isEmpty()) return 0;
-        int cn = 0, en = 0;
-        for (char c : text.toCharArray()) {
-            if (c > 0x4E00 && c < 0x9FFF || c > 0x3400 && c < 0x4DBF) {
-                cn++;
-            } else if (c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z') {
-                en++;
-            }
-        }
-        // 中文 1 字 ≈ 1 token，英文 4 字符 ≈ 1 token
-        return cn + (int) Math.ceil(en / 4.0);
+        return tokenCounter.count(text);
     }
 
-    /**
-     * 按滑动窗口切分超长文本。
-     * 窗口大小 = maxTokens 对应的字符数，步进 = (maxTokens - overlapTokens) 对应的字符数。
-     */
+    /** FIX-9: 按该段落实际 chars/token 比例换算字符窗口 */
     private List<String> splitByWindow(String text) {
-        // 将 token 数换算为字符数（粗估：1 token ≈ 2 字符，中英混合）
-        int charWindow = maxTokens * 2;
-        int charStep = (maxTokens - overlapTokens) * 2;
+        double charsPerToken = tokenCounter.charsPerToken(text);
+        int charWindow = Math.max(64, (int) (maxTokens * charsPerToken));
+        int charStep = Math.max(32, (int) ((maxTokens - overlapTokens) * charsPerToken));
 
         List<String> result = new ArrayList<>();
         int start = 0;
@@ -130,11 +102,7 @@ public class SmartChunker {
         return result;
     }
 
-    /**
-     * 合并过短的相邻块。
-     */
     private List<String> mergeShort(List<String> segments) {
-        int minTokens = maxTokens / 3;
         List<String> merged = new ArrayList<>();
         StringBuilder buffer = new StringBuilder();
 
