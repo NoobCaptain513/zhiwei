@@ -101,7 +101,7 @@ public abstract class AbstractNativeHttpProvider implements ModelProvider {
 
             HttpRequest httpRequest = HttpRequest.newBuilder()
                     .uri(URI.create(trimSlash(getBaseUrl()) + "/chat/completions"))
-                    .timeout(Duration.ofSeconds(2))
+                    .timeout(Duration.ofSeconds(Math.max(10, getTimeoutSeconds() / 3)))
                     .header("Authorization", "Bearer " + getApiKey())
                     .header("Content-Type", MediaType.APPLICATION_JSON_VALUE)
                     .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
