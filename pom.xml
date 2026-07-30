@@ -121,6 +121,12 @@
             <artifactId>spring-ai-alibaba-starter-dashscope</artifactId>
             <version>1.0.0.2</version>
         </dependency>
+        <!-- 阿里云官方 DashScope SDK（支持真流式） -->
+        <dependency>
+            <groupId>com.alibaba</groupId>
+            <artifactId>dashscope-sdk-java</artifactId>
+            <version>2.16.7</version>
+        </dependency>
         <dependency>
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-client-chat</artifactId>

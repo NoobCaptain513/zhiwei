@@ -1,7 +1,9 @@
 package com.zihan.zhiwei.config;
 
 import dev.langchain4j.model.chat.ChatLanguageModel;
+import dev.langchain4j.model.chat.StreamingChatLanguageModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
@@ -13,6 +15,7 @@ import java.time.Duration;
  * D5: LangChain4j Claude-compatible ChatLanguageModel 配置。
  * <p>
  * 默认对接 DashScope Claude 兼容端点；也可改 base-url / api-key 指向任意兼容服务。
+ * 修改：新增 StreamingChatLanguageModel 支持真流式输出。
  */
 @Configuration
 @ConditionalOnProperty(
@@ -33,6 +36,30 @@ public class LangChain4jConfig {
             @Value("${zhiwei.ai.langchain4j.max-tokens:2048}") Integer maxTokens) {
 
         return OpenAiChatModel.builder()
+                .baseUrl(baseUrl)
+                .apiKey(apiKey)
+                .modelName(model)
+                .temperature(temperature)
+                .maxTokens(maxTokens)
+                .timeout(Duration.ofSeconds(timeoutSeconds))
+                .logRequests(false)
+                .logResponses(false)
+                .build();
+    }
+
+    /**
+     * 新增：流式 ChatLanguageModel，用于真流式输出。
+     */
+    @Bean
+    public StreamingChatLanguageModel streamingChatLanguageModel(
+            @Value("${zhiwei.ai.langchain4j.base-url:https://dashscope.aliyuncs.com/compatible-mode/v1}") String baseUrl,
+            @Value("${zhiwei.ai.langchain4j.api-key:${spring.ai.dashscope.api-key:}}") String apiKey,
+            @Value("${zhiwei.ai.langchain4j.model:qwen-plus}") String model,
+            @Value("${zhiwei.ai.langchain4j.timeout-seconds:60}") long timeoutSeconds,
+            @Value("${zhiwei.ai.langchain4j.temperature:0.7}") Double temperature,
+            @Value("${zhiwei.ai.langchain4j.max-tokens:2048}") Integer maxTokens) {
+
+        return OpenAiStreamingChatModel.builder()
                 .baseUrl(baseUrl)
                 .apiKey(apiKey)
                 .modelName(model)

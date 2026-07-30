@@ -1,15 +1,20 @@
 package com.zihan.zhiwei.ai.provider;
 
+import com.alibaba.dashscope.aigc.generation.Generation;
+import com.alibaba.dashscope.aigc.generation.GenerationParam;
+import com.alibaba.dashscope.aigc.generation.GenerationResult;
+import com.alibaba.dashscope.common.Message;
+import com.alibaba.dashscope.common.Role;
+import com.alibaba.dashscope.exception.InputRequiredException;
+import com.alibaba.dashscope.exception.NoApiKeyException;
+import com.alibaba.dashscope.utils.Constants;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatRequest;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatResponse;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatMessage;
 import com.zihan.zhiwei.ai.stream.StreamResult;
 import com.zihan.zhiwei.common.exception.BusinessException;
-import lombok.RequiredArgsConstructor;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.SystemMessage;
-import org.springframework.ai.chat.messages.UserMessage;
+import io.reactivex.Flowable;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
@@ -18,21 +23,32 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 /**
- * 基于 Spring AI Alibaba DashScope 的 Provider 实现。
+ * 基于阿里云官方 DashScope SDK 的 Provider 实现。
+ * 修改：使用官方 SDK 的 Generation.streamCall() 实现真流式输出。
  */
+@Slf4j
 @Component
-@RequiredArgsConstructor
 public class SpringAiAlibabaProvider implements ModelProvider {
 
     public static final String PROVIDER_NAME = "spring-ai-alibaba";
 
     private final ChatModel chatModel;
+    private final Generation generation;
+
+    @Value("${spring.ai.dashscope.api-key}")
+    private String apiKey;
 
     @Value("${spring.ai.dashscope.chat.options.model:qwen-plus}")
     private String defaultModel;
+
+    public SpringAiAlibabaProvider(ChatModel chatModel) {
+        this.chatModel = chatModel;
+        this.generation = new Generation();
+    }
 
     @Override
     public String name() {
@@ -41,7 +57,7 @@ public class SpringAiAlibabaProvider implements ModelProvider {
 
     @Override
     public ProviderChatResponse chat(ProviderChatRequest request) {
-        List<Message> messages = buildSpringMessages(request);
+        List<org.springframework.ai.chat.messages.Message> messages = buildSpringMessages(request);
         String model = request.model() != null ? request.model() : defaultModel;
         ChatResponse response = chatModel.call(new Prompt(messages));
 
@@ -60,33 +76,99 @@ public class SpringAiAlibabaProvider implements ModelProvider {
     }
 
     /**
-     * D15: Spring AI 当前不支持流式回调，回退到同步 chat() 再一次性 emit。
-     * 后续可替换为 StreamingChatModel。
+     * 真流式实现：使用阿里云官方 DashScope SDK 的 streamCall() 方法。
      */
     @Override
     public StreamResult streamChat(ProviderChatRequest request, Consumer<String> onToken) {
-        ProviderChatResponse response = chat(request);
-        if (response.content() != null && !response.content().isEmpty()) {
-            onToken.accept(response.content());
+        String model = request.model() != null ? request.model() : defaultModel;
+        List<Message> messages = buildDashScopeMessages(request);
+
+        AtomicInteger promptTokens = new AtomicInteger(0);
+        AtomicInteger completionTokens = new AtomicInteger(0);
+
+        try {
+            // 构建流式请求参数
+            GenerationParam param = GenerationParam.builder()
+                    .apiKey(apiKey)
+                    .model(model)
+                    .messages(messages)
+                    .resultFormat(GenerationParam.ResultFormat.MESSAGE)
+                    .incrementalOutput(true)  // 开启增量输出（真流式关键）
+                    .build();
+
+            // 调用流式接口
+            Flowable<GenerationResult> stream = generation.streamCall(param);
+
+            // 阻塞消费流式响应
+            stream.blockingForEach(result -> {
+                // 提取增量文本
+                String content = result.getOutput().getChoices().get(0).getMessage().getContent();
+                if (content != null && !content.isEmpty()) {
+                    onToken.accept(content);
+                }
+
+                // 提取 token 统计（通常在最后一个 chunk 返回）
+                var usage = result.getUsage();
+                if (usage != null) {
+                    promptTokens.set(usage.getInputTokens());
+                    completionTokens.set(usage.getOutputTokens());
+                }
+            });
+
+            log.debug("[{}Stream] done model={} promptTokens={} completionTokens={}",
+                    PROVIDER_NAME, model, promptTokens.get(), completionTokens.get());
+
+            return StreamResult.of(model, PROVIDER_NAME, promptTokens.get(), completionTokens.get());
+
+        } catch (NoApiKeyException | InputRequiredException e) {
+            throw new BusinessException("DashScope SDK 参数错误: " + e.getMessage());
+        } catch (Exception e) {
+            throw new BusinessException("DashScope Stream 调用失败: " + e.getMessage());
         }
-        return StreamResult.of(response.model(), response.provider(),
-                response.promptTokens(), response.completionTokens());
     }
 
-    private List<Message> buildSpringMessages(ProviderChatRequest request) {
-        List<Message> messages = new ArrayList<>();
+    /**
+     * 构建 Spring AI 消息列表（用于同步调用）
+     */
+    private List<org.springframework.ai.chat.messages.Message> buildSpringMessages(ProviderChatRequest request) {
+        List<org.springframework.ai.chat.messages.Message> messages = new ArrayList<>();
         for (ProviderChatMessage item : request.messages()) {
             messages.add(toSpringMessage(item));
         }
         return messages;
     }
 
-    private Message toSpringMessage(ProviderChatMessage message) {
+    private org.springframework.ai.chat.messages.Message toSpringMessage(ProviderChatMessage message) {
         return switch (message.role()) {
-            case "system" -> new SystemMessage(message.content());
-            case "assistant" -> new AssistantMessage(message.content());
-            case "user" -> new UserMessage(message.content());
+            case "system" -> new org.springframework.ai.chat.messages.SystemMessage(message.content());
+            case "assistant" -> new org.springframework.ai.chat.messages.AssistantMessage(message.content());
+            case "user" -> new org.springframework.ai.chat.messages.UserMessage(message.content());
             default -> throw new BusinessException("不支持的消息角色: " + message.role());
         };
+    }
+
+    /**
+     * 构建 DashScope SDK 消息列表（用于流式调用）
+     */
+    private List<Message> buildDashScopeMessages(ProviderChatRequest request) {
+        List<Message> messages = new ArrayList<>();
+        for (ProviderChatMessage item : request.messages()) {
+            messages.add(toDashScopeMessage(item));
+        }
+        return messages;
+    }
+
+    private Message toDashScopeMessage(ProviderChatMessage message) {
+        Role role = switch (message.role()) {
+            case "system" -> Role.SYSTEM;
+            case "assistant" -> Role.ASSISTANT;
+            case "user" -> Role.USER;
+            default -> throw new BusinessException("不支持的消息角色: " + message.role());
+        };
+
+        return Message.builder()
+                .role(role.getValue())
+                .content(message.content())
+                .build();
     }
 }

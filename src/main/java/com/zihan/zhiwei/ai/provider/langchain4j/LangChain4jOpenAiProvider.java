@@ -11,6 +11,7 @@ import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.chat.ChatLanguageModel;
+import dev.langchain4j.model.chat.StreamingChatLanguageModel;
 import dev.langchain4j.model.output.Response;
 import dev.langchain4j.model.output.TokenUsage;
 import lombok.RequiredArgsConstructor;
@@ -20,10 +21,13 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 /**
  * D5+D15: LangChain4j Claude-compatible Provider。
+ * 修改：使用 StreamingChatLanguageModel 实现真流式输出。
  */
 @Component
 @RequiredArgsConstructor
@@ -33,6 +37,7 @@ public class LangChain4jOpenAiProvider implements ModelProvider {
     public static final String PROVIDER_NAME = "langchain4j-openai";
 
     private final ChatLanguageModel chatLanguageModel;
+    private final StreamingChatLanguageModel streamingChatLanguageModel; // 新增
 
     @Value("${zhiwei.ai.langchain4j.model:qwen-plus}")
     private String defaultModel;
@@ -64,17 +69,54 @@ public class LangChain4jOpenAiProvider implements ModelProvider {
     }
 
     /**
-     * D15: LangChain4j ChatLanguageModel 当前不支持流式回调，回退同步。
-     * 后续可替换为 StreamingChatLanguageModel。
+     * 真流式实现：使用 LangChain4j 的 StreamingChatLanguageModel。
      */
     @Override
     public StreamResult streamChat(ProviderChatRequest request, Consumer<String> onToken) {
-        ProviderChatResponse response = chat(request);
-        if (response.content() != null && !response.content().isEmpty()) {
-            onToken.accept(response.content());
+        List<ChatMessage> messages = buildLcMessages(request);
+        String model = request.model() != null ? request.model() : defaultModel;
+
+        AtomicInteger promptTokens = new AtomicInteger(0);
+        AtomicInteger completionTokens = new AtomicInteger(0);
+        CompletableFuture<Response<AiMessage>> future = new CompletableFuture<>();
+
+        try {
+            streamingChatLanguageModel.generate(messages, new dev.langchain4j.model.StreamingResponseHandler<AiMessage>() {
+                @Override
+                public void onNext(String token) {
+                    // 实时回调每个 token
+                    if (token != null && !token.isEmpty()) {
+                        onToken.accept(token);
+                    }
+                }
+
+                @Override
+                public void onComplete(Response<AiMessage> response) {
+                    // 流式完成后获取完整响应
+                    future.complete(response);
+                }
+
+                @Override
+                public void onError(Throwable error) {
+                    future.completeExceptionally(error);
+                }
+            });
+
+            // 阻塞等待流式完成
+            Response<AiMessage> response = future.join();
+
+            // 提取 token 统计
+            TokenUsage usage = response.tokenUsage();
+            if (usage != null) {
+                promptTokens.set(usage.inputTokenCount() != null ? usage.inputTokenCount() : 0);
+                completionTokens.set(usage.outputTokenCount() != null ? usage.outputTokenCount() : 0);
+            }
+
+            return StreamResult.of(model, PROVIDER_NAME, promptTokens.get(), completionTokens.get());
+
+        } catch (Exception e) {
+            throw new BusinessException("LangChain4j Stream 调用失败: " + e.getMessage());
         }
-        return StreamResult.of(response.model(), response.provider(),
-                response.promptTokens(), response.completionTokens());
     }
 
     private List<ChatMessage> buildLcMessages(ProviderChatRequest request) {
