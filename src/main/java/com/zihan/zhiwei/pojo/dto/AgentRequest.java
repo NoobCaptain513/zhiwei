@@ -19,5 +19,8 @@ public record AgentRequest(
         String model,
 
         /** 是否跳过工具调用，纯聊天 */
-        boolean chatOnly
+        boolean chatOnly,
+
+        /** 指定 Provider，可选（如 "ollama", "native-dashscope"），用于 RAG Embedding 选择 */
+        String preferredProvider
 ) {}

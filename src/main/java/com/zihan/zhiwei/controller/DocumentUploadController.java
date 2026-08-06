@@ -46,11 +46,70 @@ public class DocumentUploadController {
         if (file.isEmpty()) {
             return Result.fail(400, "文件不能为空");
         }
+        Map<String, Object> result = handleSingleUpload(file, userId);
+        if (Boolean.FALSE.equals(result.get("success"))) {
+            return Result.fail(400, String.valueOf(result.get("message")));
+        }
+        return Result.ok(result);
+    }
 
+    @PostMapping("/upload/batch")
+    @Operation(summary = "批量上传文档 → 逐个 document表(PENDING) → 发MQ → 异步解析+分块+入库")
+    public Result<Map<String, Object>> uploadBatch(
+            @RequestParam("files") MultipartFile[] files,
+            @RequestParam(value = "userId", defaultValue = "user-001") String userId) {
+
+        if (files == null || files.length == 0) {
+            return Result.fail(400, "文件列表不能为空");
+        }
+
+        List<Map<String, Object>> results = new ArrayList<>();
+        int successCount = 0;
+        int failCount = 0;
+        for (MultipartFile file : files) {
+            String fileName = file.getOriginalFilename() == null ? "unknown" : file.getOriginalFilename();
+            try {
+                if (file.isEmpty()) {
+                    results.add(Map.of("fileName", fileName, "success", false, "message", "文件为空"));
+                    failCount++;
+                    continue;
+                }
+                Map<String, Object> r = handleSingleUpload(file, userId);
+                results.add(r);
+                if (Boolean.TRUE.equals(r.get("success"))) {
+                    successCount++;
+                } else {
+                    failCount++;
+                }
+            } catch (Exception e) {
+                log.warn("[UploadBatch] failed file={}: {}", fileName, e.getMessage());
+                results.add(Map.of("fileName", fileName, "success", false,
+                        "message", e.getMessage() == null ? "上传失败" : e.getMessage()));
+                failCount++;
+            }
+        }
+
+        Map<String, Object> resp = new HashMap<>();
+        resp.put("total", files.length);
+        resp.put("successCount", successCount);
+        resp.put("failCount", failCount);
+        resp.put("results", results);
+        return Result.ok(resp);
+    }
+
+    /**
+     * 单文件上传核心逻辑：入库 PENDING → 发 MQ → 预解析统计分块数。
+     * 返回 Map 含 success 标记，供单文件与批量接口共用。
+     */
+    private Map<String, Object> handleSingleUpload(MultipartFile file, String userId) throws Exception {
         String fileName = file.getOriginalFilename() == null ? "unknown" : file.getOriginalFilename();
         String ext = DocumentParser.getExtension(fileName);
         if (!documentParser.isSupported(DocumentParser.mimeTypeFromExtension(ext))) {
-            return Result.fail(400, "不支持的文件类型: " + ext + "，支持 " + DocumentParser.supportedExtensions());
+            Map<String, Object> fail = new HashMap<>();
+            fail.put("fileName", fileName);
+            fail.put("success", false);
+            fail.put("message", "不支持的文件类型: " + ext + "，支持 " + DocumentParser.supportedExtensions());
+            return fail;
         }
 
         KnowledgeDocument doc = new KnowledgeDocument();
@@ -83,12 +142,14 @@ public class DocumentUploadController {
             log.warn("[Upload] pre-parse failed: {}", e.getMessage());
         }
 
-        return Result.ok(Map.of(
-                "documentId", doc.getId(),
-                "fileName", fileName,
-                "status", "PENDING",
-                "totalChunks", totalChunks,
-                "message", "文档已提交，正在异步处理"));
+        Map<String, Object> ok = new HashMap<>();
+        ok.put("documentId", doc.getId());
+        ok.put("fileName", fileName);
+        ok.put("success", true);
+        ok.put("status", "PENDING");
+        ok.put("totalChunks", totalChunks);
+        ok.put("message", "文档已提交，正在异步处理");
+        return ok;
     }
 
     @PostMapping("/preview")

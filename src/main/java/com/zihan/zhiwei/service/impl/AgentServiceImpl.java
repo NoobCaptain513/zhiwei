@@ -124,7 +124,7 @@ public class AgentServiceImpl implements AgentService {
         }
 
         List<ProviderChatMessage> providerMessages = buildMessages(
-                systemPrompt, history, toolResultCollector.toContextBlock(), request.message());
+                systemPrompt, history, toolResultCollector.toContextBlock(), request.message(), request.preferredProvider());
 
         FailoverResult failoverResult = modelProviderRouter.executeWithFailover(
                 new ProviderChatRequest(request.model(), providerMessages));
@@ -231,7 +231,7 @@ public class AgentServiceImpl implements AgentService {
         }
 
         List<ProviderChatMessage> providerMessages = buildMessages(
-                systemPrompt, history, toolResultCollector.toContextBlock(), request.message());
+                systemPrompt, history, toolResultCollector.toContextBlock(), request.message(), request.preferredProvider());
 
         StringBuilder fullContent = new StringBuilder();
         Consumer<String> trackingOnToken = token -> {
@@ -339,7 +339,7 @@ public class AgentServiceImpl implements AgentService {
 
     private List<ProviderChatMessage> buildMessages(
             String systemPrompt, List<Message> history,
-            String toolContext, String userMessage) {
+            String toolContext, String userMessage, String preferredProvider) {
         List<ProviderChatMessage> messages = new ArrayList<>();
         StringBuilder fullSystem = new StringBuilder(systemPrompt);
         if (toolContext != null && !toolContext.isBlank()) {
@@ -351,7 +351,7 @@ public class AgentServiceImpl implements AgentService {
             Message m = history.get(i);
             messages.add(new ProviderChatMessage(m.getRole(), m.getContent()));
         }
-        messages = ragMessageAugmentor.augmentIfEnabled(messages);
+        messages = ragMessageAugmentor.augmentIfEnabled(messages, preferredProvider);
         return messages;
     }
 

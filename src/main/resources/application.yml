@@ -18,6 +18,10 @@ spring:
     listener:
       simple:
         default-requeue-rejected: false
+  servlet:
+    multipart:
+      max-file-size: 100MB
+      max-request-size: 100MB
 
 
 mybatis-plus:

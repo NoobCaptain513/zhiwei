@@ -136,16 +136,27 @@ public abstract class AbstractNativeHttpProvider implements ModelProvider {
     public ProviderChatResponse chat(ProviderChatRequest request) {
         String model = request.model() != null ? request.model() : getDefaultModel();
         try {
+            // ===== 步骤1：构建请求体 =====
             ObjectNode body = buildRequestBody(request, model, false);
+            // body = {
+            //   "model": "qwen-plus",
+            //   "stream": false,
+            //   "messages": [{"role": "user", "content": "你好"}]
+            // }
+
+            // ===== 步骤2：构建 HTTP 请求 =====
             HttpRequest httpRequest = HttpRequest.newBuilder()
                     .uri(URI.create(trimSlash(getBaseUrl()) + "/chat/completions"))
+                     // URI = https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions
                     .timeout(Duration.ofSeconds(getTimeoutSeconds()))
                     .header("Authorization", "Bearer " + getApiKey())
                     .header("Content-Type", MediaType.APPLICATION_JSON_VALUE)
                     .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
                     .build();
 
+            // ===== 步骤3：发送 HTTP 请求（同步阻塞） =====
             HttpResponse<String> httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
+            // ===== 步骤4：检查 HTTP 状态码 =====
             if (httpResponse.statusCode() < 200 || httpResponse.statusCode() >= 300) {
                 String errorDetail = includeBodyInSyncError()
                         ? " body=" + safeBody(httpResponse.body())
@@ -154,20 +165,29 @@ public abstract class AbstractNativeHttpProvider implements ModelProvider {
                         + httpResponse.statusCode() + errorDetail);
             }
 
+             // ===== 步骤5：解析响应 JSON =====
             JsonNode root = objectMapper.readTree(httpResponse.body());
+             // ===== 步骤6：提取回复内容 =====
             String content = root.path("choices").path(0).path("message").path("content").asText(null);
             if (content == null || content.isBlank()) {
                 throw new BusinessException(name() + " Provider 返回内容为空");
             }
 
+             // ===== 步骤7：提取 usage 对象（核心！） =====
             JsonNode usage = root.path("usage");
-            int promptTokens = usage.path("prompt_tokens").asInt(0);
-            int completionTokens = usage.path("completion_tokens").asInt(0);
-            int totalTokens = usage.path("total_tokens").asInt(promptTokens + completionTokens);
 
+            int promptTokens = usage.path("prompt_tokens").asInt(0);
+            // promptTokens = 150  ← DashScope 厂商实际计费的输入 token 数
+            int completionTokens = usage.path("completion_tokens").asInt(0);
+            // completionTokens = 80  ← DashScope 厂商实际计费的输出 token 数
+            int totalTokens = usage.path("total_tokens").asInt(promptTokens + completionTokens);
+            // totalTokens = 230  ← 总计费 token 数
+
+            // ===== 步骤8：构建响应对象 =====
             ProviderChatResponse response = new ProviderChatResponse(
                     content, model, name(), promptTokens, completionTokens, totalTokens);
 
+            // ===== 步骤9：模板方法钩子（关键！） =====
             afterSyncResponse(response); // 钩子：如成本校准
 
             return response;

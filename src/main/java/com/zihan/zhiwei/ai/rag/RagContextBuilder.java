@@ -27,18 +27,25 @@ public class RagContextBuilder {
     private int defaultCandidateK;
 
     public List<RagHit> retrieve(String query) {
-        return aiRagService.searchWithRewrite(query, null, defaultTopK, defaultCandidateK);
+        return aiRagService.searchWithRewrite(query, null, null, defaultTopK, defaultCandidateK);
     }
 
     /**
      * D31: 带历史上下文的检索。
      */
     public List<RagHit> retrieve(String query, String historyContext) {
-        return aiRagService.searchWithRewrite(query, historyContext, defaultTopK, defaultCandidateK);
+        return aiRagService.searchWithRewrite(query, historyContext, null, defaultTopK, defaultCandidateK);
+    }
+
+    /**
+     * 带 Provider 参数的检索（根据 Provider 动态选择 Embedding）
+     */
+    public List<RagHit> retrieve(String query, String historyContext, String provider) {
+        return aiRagService.searchWithRewrite(query, historyContext, provider, defaultTopK, defaultCandidateK);
     }
 
     public List<RagHit> retrieve(String query, Integer topK, Integer candidateK) {
-        return aiRagService.searchWithRewrite(query, null, topK, candidateK);
+        return aiRagService.searchWithRewrite(query, null, null, topK, candidateK);
     }
 
     public String buildContextBlock(String query) {
@@ -50,6 +57,13 @@ public class RagContextBuilder {
      */
     public String buildContextBlock(String query, String historyContext) {
         return buildContextBlock(retrieve(query, historyContext));
+    }
+
+    /**
+     * 带 Provider 参数的上下文构建（根据 Provider 动态选择 Embedding）
+     */
+    public String buildContextBlock(String query, String historyContext, String provider) {
+        return buildContextBlock(retrieve(query, historyContext, provider));
     }
 
     public String buildContextBlock(List<RagHit> hits) {

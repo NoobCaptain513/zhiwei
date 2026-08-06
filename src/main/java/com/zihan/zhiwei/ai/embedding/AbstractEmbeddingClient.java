@@ -23,7 +23,7 @@ import java.util.List;
  * 子类只需提供配置值和错误消息前缀。
  */
 @Slf4j
-public abstract class AbstractEmbeddingClient {
+public abstract class AbstractEmbeddingClient implements EmbeddingClient {
 
     protected final ObjectMapper objectMapper;
 

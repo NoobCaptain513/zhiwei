@@ -26,7 +26,20 @@ public class RagMessageAugmentor {
     @Value("${zhiwei.ai.rag.rewrite-history-size:3}")
     private int rewriteHistorySize;
 
+    /**
+     * 消息增强（不带 Provider 参数，向后兼容）
+     */
     public List<ProviderChatMessage> augmentIfEnabled(List<ProviderChatMessage> messages) {
+        return augmentIfEnabled(messages, null);
+    }
+
+    /**
+     * 消息增强（带 Provider 参数，根据 Provider 动态选择 Embedding）
+     * @param messages 原始消息列表
+     * @param provider Provider 名称（如 "ollama", "native-dashscope"），null 表示默认
+     * @return 增强后的消息列表
+     */
+    public List<ProviderChatMessage> augmentIfEnabled(List<ProviderChatMessage> messages, String provider) {
         if (!injectOnChat || messages == null || messages.isEmpty()) {
             return messages;
         }
@@ -47,7 +60,7 @@ public class RagMessageAugmentor {
         // D31: 提取最近对话历史作为改写上下文
         String historyContext = buildHistoryContext(messages, lastUserIdx);
 
-        String block = ragContextBuilder.buildContextBlock(lastUser.trim(), historyContext);
+        String block = ragContextBuilder.buildContextBlock(lastUser.trim(), historyContext, provider);
         if (block == null || block.isBlank()) {
             return messages;
         }

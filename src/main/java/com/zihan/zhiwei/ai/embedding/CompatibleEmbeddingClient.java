@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
  * D10: Claude 兼容 Embedding 客户端（DashScope text-embedding-v4 / 1536 维）
  *
  * P1-9 修复：继承 AbstractEmbeddingClient，删除 ~90% 重复代码。
+ *
  */
 @Slf4j
 @Component

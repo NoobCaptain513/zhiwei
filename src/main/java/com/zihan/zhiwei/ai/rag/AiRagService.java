@@ -1,6 +1,8 @@
 package com.zihan.zhiwei.ai.rag;
 
 import com.zihan.zhiwei.ai.embedding.CompatibleEmbeddingClient;
+import com.zihan.zhiwei.ai.embedding.EmbeddingClient;
+import com.zihan.zhiwei.ai.embedding.EmbeddingClientSelector;
 import com.zihan.zhiwei.ai.knowledge.TokenCounter;
 import com.zihan.zhiwei.ai.rag.dto.QueryRewriteResult;
 import com.zihan.zhiwei.ai.rag.dto.RagHit;
@@ -43,6 +45,7 @@ public class AiRagService {
             Pattern.compile("[\\s\\p{Punct}，。！？；：、\u201c\u201d\u2018\u2019（）【】《》]+");
 
     private final CompatibleEmbeddingClient embeddingClient;
+    private final EmbeddingClientSelector embeddingSelector;
     private final PgVectorKnowledgeRepository repository;
     private final RrfFusion rrfFusion;
     private final RagReranker reranker;
@@ -77,8 +80,10 @@ public class AiRagService {
                         RagReranker reranker,
                         QueryRewriter queryRewriter,
                         MultiQueryAggregator multiQueryAggregator,
-                        TokenCounter tokenCounter) {
+                        TokenCounter tokenCounter,
+                        EmbeddingClientSelector embeddingSelector) {
         this.embeddingClient = embeddingClient;
+        this.embeddingSelector = embeddingSelector;
         this.repository = repository;
         this.rrfFusion = rrfFusion;
         this.reranker = reranker;
@@ -95,11 +100,25 @@ public class AiRagService {
     // ==================== D31: 带查询改写的检索 ====================
 
     public List<RagHit> searchWithRewrite(String query, String historyContext) {
-        return searchWithRewrite(query, historyContext, defaultTopK, defaultCandidateK);
+        return searchWithRewrite(query, historyContext, null, defaultTopK, defaultCandidateK);
     }
 
     public List<RagHit> searchWithRewrite(String query, String historyContext,
                                            Integer topK, Integer candidateK) {
+        return searchWithRewrite(query, historyContext, null, topK, candidateK);
+    }
+
+    /**
+     * 带 Provider 参数的检索方法（根据 Provider 动态选择 Embedding）
+     * @param query 查询文本
+     * @param historyContext 历史上下文
+     * @param provider Provider 名称（如 "ollama", "native-dashscope"），null 表示默认
+     * @param topK 最终返回数量
+     * @param candidateK 候选数量
+     * @return 检索结果
+     */
+    public List<RagHit> searchWithRewrite(String query, String historyContext,
+                                           String provider, Integer topK, Integer candidateK) {
         if (query == null || query.isBlank()) {
             throw new BusinessException("query 不能为空");
         }
@@ -111,7 +130,7 @@ public class AiRagService {
         List<String> queries = rewriteResult.allQueries();
 
         if (queries.size() == 1) {
-            return singleQuerySearch(queries.get(0), top, cand);
+            return singleQuerySearch(queries.get(0), provider, top, cand);
         }
 
         // FIX-5: 并行子查询检索
@@ -119,7 +138,7 @@ public class AiRagService {
         final int fCand = cand;
         Map<String, Future<List<RagHit>>> futures = new LinkedHashMap<>();
         for (String q : queries) {
-            futures.put(q, subQueryExecutor.submit(() -> singleQuerySearch(q, fTop, fCand)));
+            futures.put(q, subQueryExecutor.submit(() -> singleQuerySearch(q, provider, fTop, fCand)));
         }
 
         Map<String, List<RagHit>> resultsMap = new LinkedHashMap<>();
@@ -145,7 +164,7 @@ public class AiRagService {
         }
 
         if (resultsMap.isEmpty()) {
-            return singleQuerySearch(query, top, cand);
+            return singleQuerySearch(query, provider, top, cand);
         }
         List<RagHit> aggregated = multiQueryAggregator.aggregate(resultsMap, top);
         log.info("[RAG] multi-query(parallel): original='{}' subQ={} ok={} merged={}",
@@ -156,20 +175,29 @@ public class AiRagService {
     // ==================== 原有检索入口（兼容） ====================
 
     public List<RagHit> search(String query) {
-        return searchWithRewrite(query, null, defaultTopK, defaultCandidateK);
+        return searchWithRewrite(query, null, null, defaultTopK, defaultCandidateK);
     }
 
     public List<RagHit> search(String query, Integer topK, Integer candidateK) {
-        return searchWithRewrite(query, null, topK, candidateK);
+        return searchWithRewrite(query, null, null, topK, candidateK);
     }
 
     // ==================== 单查询检索 ====================
 
-    private List<RagHit> singleQuerySearch(String query, int top, int cand) {
-        float[] qVec = embeddingClient.embed(query.trim());
+    private List<RagHit> singleQuerySearch(String query, String provider, int top, int cand) {
+        // 根据 Provider 选择 Embedding 客户端
+        EmbeddingClient client = (provider != null && embeddingSelector != null)
+                ? embeddingSelector.select(provider)
+                : embeddingClient;
+        float[] qVec = client.embed(query.trim());
+
+        // 根据 Provider 选择向量列名
+        String vectorColumn = (provider != null && embeddingSelector != null)
+                ? embeddingSelector.getVectorColumn(provider)
+                : "embedding";
 
         List<PgVectorKnowledgeRepository.ScoredChunk> vectorResults =
-                repository.searchByCosine(qVec, cand);
+                repository.searchByCosine(qVec, cand, vectorColumn);
         if (vectorResults.isEmpty()) {
             return List.of();
         }

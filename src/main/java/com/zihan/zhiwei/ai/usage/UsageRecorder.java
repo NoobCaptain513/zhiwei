@@ -53,8 +53,9 @@ public class UsageRecorder {
                        long latencyMs,
                        boolean degraded) {
         String status = degraded ? STATUS_DEGRADED : STATUS_SUCCESS;
-        BigDecimal cost = costCalibrationInterceptor.estimateCost(
-                response.promptTokens(), response.completionTokens());
+        // FIX: 使用支持 Provider 区分的成本计算方法，确保 Ollama 本地模型零成本
+        BigDecimal cost = costCalibrationInterceptor.estimateCostForProvider(
+                response.provider(), response.promptTokens(), response.completionTokens());
 
         AiUsageLog row = new AiUsageLog();
         row.setConversationId(conversationId);

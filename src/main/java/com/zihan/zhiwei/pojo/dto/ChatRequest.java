@@ -20,5 +20,8 @@ public record ChatRequest(
         String message,
 
         /** 指定模型，可选 */
-        String model
+        String model,
+
+        /** 指定 Provider，可选（如 "ollama", "native-dashscope"），用于 RAG Embedding 选择 */
+        String preferredProvider
 ) {}

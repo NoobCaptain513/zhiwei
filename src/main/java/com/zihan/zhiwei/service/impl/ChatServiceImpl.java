@@ -47,7 +47,7 @@ public class ChatServiceImpl implements ChatService {
         for (int i = start; i < history.size(); i++) {
             providerMessages.add(new ProviderChatMessage(history.get(i).getRole(), history.get(i).getContent()));
         }
-        providerMessages = ragMessageAugmentor.augmentIfEnabled(providerMessages);
+        providerMessages = ragMessageAugmentor.augmentIfEnabled(providerMessages, request.preferredProvider());
 
         FailoverResult failoverResult = modelProviderRouter.executeWithFailover(
                 new ProviderChatRequest(request.model(), providerMessages));
@@ -93,7 +93,7 @@ public class ChatServiceImpl implements ChatService {
         for (int i = start; i < history.size(); i++) {
             providerMessages.add(new ProviderChatMessage(history.get(i).getRole(), history.get(i).getContent()));
         }
-        providerMessages = ragMessageAugmentor.augmentIfEnabled(providerMessages);
+        providerMessages = ragMessageAugmentor.augmentIfEnabled(providerMessages, request.preferredProvider());
 
         // 3. 收集完整文本（流式 + 入库）
         StringBuilder fullContent = new StringBuilder();

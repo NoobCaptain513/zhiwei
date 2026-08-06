@@ -64,7 +64,29 @@ public class CostCalibrationInterceptor {
         return estimated;
     }
 
+    /**
+     * 估算成本（不区分 Provider）
+     * @deprecated 使用 {@link #estimateCostForProvider(String, int, int)} 替代
+     */
+    @Deprecated
     public BigDecimal estimateCost(int promptTokens, int completionTokens) {
+        return estimateCostForProvider(null, promptTokens, completionTokens);
+    }
+
+    /**
+     * 估算成本（支持 Provider 区分）
+     * @param provider Provider 名称，如果为 "ollama" 则返回零成本
+     * @param promptTokens 输入 token 数
+     * @param completionTokens 输出 token 数
+     * @return 估算成本（元）
+     */
+    public BigDecimal estimateCostForProvider(String provider, int promptTokens, int completionTokens) {
+        // Ollama 本地模型零成本
+        if ("ollama".equals(provider)) {
+            return BigDecimal.ZERO;
+        }
+
+        // 云端 Provider 正常计算
         BigDecimal prompt = BigDecimal.valueOf(promptTokens)
                 .multiply(BigDecimal.valueOf(promptPricePer1k))
                 .divide(BigDecimal.valueOf(1000), 8, RoundingMode.HALF_UP);
