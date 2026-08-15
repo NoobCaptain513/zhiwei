@@ -31,6 +31,7 @@ import com.zihan.zhiwei.service.AgentService;
 import com.zihan.zhiwei.service.ConversationService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -63,7 +64,12 @@ public class AgentServiceImpl implements AgentService {
      */
     @Autowired(required = false)
     private OpsAgentToolService opsAgentToolService;
-    private final ToolResultCollector toolResultCollector;
+    /**
+     * 修复 ScopeNotActiveException：ToolResultCollector 改为 prototype scope，
+     * 通过 ObjectProvider 每次调用时获取一个全新实例，
+     * 避免 @RequestScope 在 AiStreamAdvice 线程池中找不到 request 上下文的问题。
+     */
+    private final ObjectProvider<ToolResultCollector> toolResultCollectorProvider;
     private final AgentFallbackHandler fallbackHandler;
     private final AgentReplyService replyService;
     private final AgentClarificationService clarificationService;
@@ -86,7 +92,8 @@ public class AgentServiceImpl implements AgentService {
             throw new BusinessException(rejectReason);
         }
 
-        toolResultCollector.clear();
+        // prototype scope：每次调用获取一个全新实例，线程安全，无 request 上下文依赖
+        ToolResultCollector toolResultCollector = toolResultCollectorProvider.getObject();
 
         Conversation conversation = conversationService.getOrCreate(
                 request.userId(), request.conversationId());
@@ -201,7 +208,8 @@ public class AgentServiceImpl implements AgentService {
             throw new BusinessException(rejectReason);
         }
 
-        toolResultCollector.clear();
+        // prototype scope：每次调用获取一个全新实例，线程安全，无 request 上下文依赖
+        ToolResultCollector toolResultCollector = toolResultCollectorProvider.getObject();
 
         Conversation conversation = conversationService.getOrCreate(
                 request.userId(), request.conversationId());

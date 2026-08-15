@@ -70,12 +70,10 @@ public class AgentIntentAnalyzer {
 
         List<AgentIntent.Score> ranked = scoreKeywords(message);
 
-        // 完全没命中关键词 → 列出全部意图
+        // 完全没命中关键词 → 直接走 rag（知识检索），不弹澄清
+        // 理由：用户说的内容不涉及故障/日志/部署/工单时，最合理的默认行为是去知识库找答案
         if (ranked.size() == 1 && ranked.get(0).getConfidence() == 0.0) {
-            List<AgentIntent.Score> allIntents = AgentIntent.ALL_INTENTS.stream()
-                    .map(i -> new AgentIntent.Score(i, 0.0))
-                    .toList();
-            return buildClarification(allIntents, clarifyStep);
+            return confidentResult(AgentIntent.RAG);
         }
 
         AgentIntent.Score top = ranked.get(0);
@@ -176,7 +174,8 @@ public class AgentIntentAnalyzer {
     }
 
     private AgentIntent buildClarification(List<AgentIntent.Score> ranked, int step) {
-        int count = Math.min(3, ranked.size());
+        // 展示全部 ALL_INTENTS 数量（5个），确保完全没命中关键词时不遗漏 ticket/rag
+        int count = Math.min(AgentIntent.ALL_INTENTS.size(), ranked.size());
         List<AgentIntent.Score> top = ranked.subList(0, count);
         List<ClarifyOption> suggestions = intentTree.buildClarifyOptions(top);
 

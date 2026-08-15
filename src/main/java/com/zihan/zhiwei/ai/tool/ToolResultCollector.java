@@ -1,22 +1,25 @@
 package com.zihan.zhiwei.ai.tool;
 
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.config.ConfigurableBeanFactory;
+import org.springframework.context.annotation.Scope;
 import org.springframework.stereotype.Component;
-import org.springframework.web.context.annotation.RequestScope;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
  * D12: 工具调用结果收集器。
- * Agent 循环中每调一次工具就把结果收集起来，最后一次性拼入 prompt / 卡片。
+ * Agent 循环中每调一次工具就把结果收集起来，最后一次性拼成 prompt / 卡片。
  *
- * 修复 P0-1：使用 @RequestScope 确保每次 HTTP 请求拥有独立的实例，
- * 避免多用户并发时共享同一 results 列表导致数据泄漏。
+ * 修复 ScopeNotActiveException：原版 @RequestScope 在 AiStreamAdvice 线程池里执行时
+ * 已脱离 HTTP 请求线程，导致 Spring 找不到 request 上下文。
+ * 改为 prototype scope，通过 ObjectProvider.getObject() 每次获取全新实例，
+ * 无需绑定到 request 上下文，并发安全由调用方（AgentServiceImpl）用局部变量保证。
  */
 @Slf4j
 @Component
-@RequestScope
+@Scope(ConfigurableBeanFactory.SCOPE_PROTOTYPE)
 public class ToolResultCollector {
 
     private final List<ToolCallResult> results = new ArrayList<>();

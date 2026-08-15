@@ -22,6 +22,11 @@ spring:
     multipart:
       max-file-size: 100MB
       max-request-size: 100MB
+  mvc:
+    async:
+      # SSE 流式接口最长等待时间，需大于 AiStreamAdvice.DEFAULT_TIMEOUT_MS（180s）
+      # -1 表示无限制；这里设 300s 给足缓冲
+      request-timeout: 300000
 
 
 mybatis-plus:
