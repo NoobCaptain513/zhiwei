@@ -1,6 +1,7 @@
 package com.zihan.zhiwei.ai.mcp;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zihan.zhiwei.ai.mcp.McpToolService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -9,6 +10,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 /**
  * D32: MCP JSON-RPC 2.0 协议处理。
@@ -106,6 +108,74 @@ public class McpJsonRpcService {
             r.put("isError", true);
         }
         return successResponse(id, r);
+    }
+
+    // ==================== D32: tools/call 流式版本 ====================
+
+    /**
+     * 流式处理 tools/call：先推进度通知，再推最终结果。
+     * onEvent 回调由 McpController 将每帧序列化并写入 SseEmitter。
+     */
+    @SuppressWarnings("unchecked")
+    public void handleStream(Map<String, Object> request, Consumer<Map<String, Object>> onEvent) {
+        Object id = request.get("id");
+        Object params = request.get("params");
+
+        if (!(params instanceof Map)) {
+            onEvent.accept(errorResponse(id, -32602, "Invalid params"));
+            return;
+        }
+        Map<String, Object> paramsMap = (Map<String, Object>) params;
+        String toolName = (String) paramsMap.get("name");
+        Map<String, Object> arguments = (Map<String, Object>) paramsMap.getOrDefault("arguments", Map.of());
+
+        if (toolName == null || toolName.isBlank()) {
+            onEvent.accept(errorResponse(id, -32602, "Missing tool name"));
+            return;
+        }
+
+        log.info("[MCP/Stream] tools/call tool={} id={}", toolName, id);
+
+        // 步骤1：推“开始执行”进度通知
+        onEvent.accept(buildProgressNotification(toolName, "工具 " + toolName + " 开始执行..."));
+
+        long start = System.currentTimeMillis();
+        McpToolService.McpToolResult result;
+        try {
+            result = mcpToolService.call(toolName, arguments);
+        } catch (Exception e) {
+            log.warn("[MCP/Stream] tool={} failed: {}", toolName, e.getMessage());
+            onEvent.accept(errorResponse(id, -32603, "工具执行失败: " + e.getMessage()));
+            return;
+        }
+        long latencyMs = System.currentTimeMillis() - start;
+
+        // 步骤2：推“执行完成”进度通知
+        onEvent.accept(buildProgressNotification(toolName,
+                "工具执行完成，耗时 " + latencyMs + "ms，封装结果中..."));
+
+        // 步骤3：推最终 JSON-RPC 结果帧
+        Map<String, Object> r = new LinkedHashMap<>();
+        r.put("content", result.getContent());
+        if (result.isError()) {
+            r.put("isError", true);
+        }
+        onEvent.accept(successResponse(id, r));
+
+        log.info("[MCP/Stream] tools/call done tool={} latencyMs={} isError={}",
+                toolName, latencyMs, result.isError());
+    }
+
+    /** 构造 MCP 进度通知帧（notifications/progress 格式） */
+    private Map<String, Object> buildProgressNotification(String toolName, String message) {
+        Map<String, Object> notification = new LinkedHashMap<>();
+        notification.put("jsonrpc", "2.0");
+        notification.put("method", "notifications/progress");
+        notification.put("params", Map.of(
+                "toolName", toolName,
+                "message", message
+        ));
+        return notification;
     }
 
     // ==================== D32: prompts/list ====================

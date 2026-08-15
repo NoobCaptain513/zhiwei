@@ -60,9 +60,9 @@ class UsageRecorderTest {
     class RecordSuccessTests {
 
         @Test
-        @DisplayName("正常调用 → status=SUCCESS, 写 MySQL + Redis")
+        @DisplayName("正常调用 → status=SUCCESS, 写 MySQL（Redis 窗口由 ProviderMetrics 负责）")
         void shouldRecordSuccess() {
-            when(costCalibrationInterceptor.estimateCost(100, 50))
+            when(costCalibrationInterceptor.estimateCostForProvider(PROVIDER, 100, 50))
                     .thenReturn(new BigDecimal("0.000800"));
 
             ProviderChatResponse response = new ProviderChatResponse(
@@ -87,9 +87,8 @@ class UsageRecorderTest {
             assertThat(log.getStatus()).isEqualTo(UsageRecorder.STATUS_SUCCESS);
             assertThat(log.getCreateTime()).isNotNull();
 
-            verify(listOps).leftPush(startsWith("zhiwei:provider:metrics:window:"), anyString());
-            verify(listOps).trim(anyString(), eq(0L), anyLong());
-            verify(stringRedisTemplate).expire(startsWith("zhiwei:provider:metrics:window:"), eq(24L), eq(TimeUnit.HOURS));
+            // FIX-7 后：record() 不再旁路写 Redis，窗口由 ProviderMetrics -> RedisMetricsPersistence 负责
+            verify(listOps, never()).leftPush(anyString(), anyString());
         }
 
         @Test
@@ -153,7 +152,7 @@ class UsageRecorderTest {
     class RecordFailureTests {
 
         @Test
-        @DisplayName("失败调用 → status=FAILED, token=0, cost=0, Redis 记录失败")
+        @DisplayName("失败调用 → status=FAILED, token=0, cost=0（Redis 窗口由 ProviderMetrics 负责）")
         void shouldRecordFailure() {
             recorder.recordFailure(3L, PROVIDER, MODEL, "agent", 1200L, "timeout");
 
@@ -172,7 +171,8 @@ class UsageRecorderTest {
             assertThat(log.getLatencyMs()).isEqualTo(1200L);
             assertThat(log.getStatus()).isEqualTo(UsageRecorder.STATUS_FAILED);
 
-            verify(listOps).leftPush(startsWith("zhiwei:provider:metrics:window:"), contains("\"success\":false"));
+            // FIX-7 后：recordFailure() 不再旁路写 Redis
+            verify(listOps, never()).leftPush(anyString(), anyString());
         }
 
         @Test
@@ -265,22 +265,6 @@ class UsageRecorderTest {
     class RedisWindowTests {
 
         @Test
-        @DisplayName("pushRedisSample → leftPush + trim + expire")
-        void shouldPushToRedisWindow() throws Exception {
-            when(costCalibrationInterceptor.estimateCost(anyInt(), anyInt()))
-                    .thenReturn(BigDecimal.valueOf(0.001));
-
-            ProviderChatResponse response = new ProviderChatResponse(
-                    "test", MODEL, PROVIDER, 50, 30, 80);
-
-            recorder.record(1L, 1L, response, "chat", 150L, false);
-
-            verify(listOps).leftPush(eq("zhiwei:provider:metrics:window:" + PROVIDER), contains("\"success\":true"));
-            verify(listOps).trim(eq("zhiwei:provider:metrics:window:" + PROVIDER), eq(0L), eq(99L));
-            verify(stringRedisTemplate).expire(eq("zhiwei:provider:metrics:window:" + PROVIDER), eq(24L), eq(TimeUnit.HOURS));
-        }
-
-        @Test
         @DisplayName("readRedisWindow 空窗口 → 返回空列表")
         void shouldReturnEmptyForNoSamples() {
             when(listOps.range(anyString(), eq(0L), eq(-1L))).thenReturn(null);
@@ -326,7 +310,7 @@ class UsageRecorderTest {
         @Test
         @DisplayName("费用 = prompt*单价/1000 + completion*单价/1000")
         void shouldCallCostEstimationWithCorrectTokens() {
-            when(costCalibrationInterceptor.estimateCost(500, 300))
+            when(costCalibrationInterceptor.estimateCostForProvider(PROVIDER, 500, 300))
                     .thenReturn(new BigDecimal("0.005000"));
 
             ProviderChatResponse response = new ProviderChatResponse(
@@ -334,7 +318,7 @@ class UsageRecorderTest {
 
             recorder.record(1L, 1L, response, "chat", 100L, false);
 
-            verify(costCalibrationInterceptor).estimateCost(500, 300);
+            verify(costCalibrationInterceptor).estimateCostForProvider(PROVIDER, 500, 300);
 
             ArgumentCaptor<AiUsageLog> captor = ArgumentCaptor.forClass(AiUsageLog.class);
             verify(aiUsageLogMapper).insert(captor.capture());

@@ -37,6 +37,21 @@ public class PgVectorKnowledgeRepository {
 
     private final JdbcTemplate jdbcTemplate;
 
+    /**
+     * 向量列名白名单。列名无法用 ? 参数化（只能拼字符串），
+     * 在拼 SQL 前校验，防止列名被污染导致 SQL 注入。
+     * 对应 EmbeddingClientSelector.getVectorColumn 的两个返回值。
+     */
+    private static final Set<String> ALLOWED_VECTOR_COLUMNS = Set.of("embedding", "embedding_ollama");
+
+    /** 校验向量列名：非白名单直接拒绝（快速失败，暴露上游错误） */
+    private static String safeVectorColumn(String column) {
+        if (!ALLOWED_VECTOR_COLUMNS.contains(column)) {
+            throw new IllegalArgumentException("非法向量列名: " + column);
+        }
+        return column;
+    }
+
     public PgVectorKnowledgeRepository(@Qualifier("pgvectorJdbcTemplate") JdbcTemplate jdbcTemplate) {
         this.jdbcTemplate = jdbcTemplate;
     }
@@ -66,7 +81,7 @@ public class PgVectorKnowledgeRepository {
                     (document_id, source_id, title, content, %s, token_count)
                 VALUES (?, ?, ?, ?, ?, ?)
                 RETURNING id
-                """.formatted(column);
+                """.formatted(safeVectorColumn(column));
         Long id = jdbcTemplate.queryForObject(
                 sql,
                 Long.class,
@@ -95,7 +110,7 @@ public class PgVectorKnowledgeRepository {
                 INSERT INTO ai_knowledge_chunk
                     (document_id, source_id, title, content, %s, token_count)
                 VALUES (?, ?, ?, ?, ?, ?)
-                """.formatted(column);
+                """.formatted(safeVectorColumn(column));
         int[] counts = jdbcTemplate.batchUpdate(sql, new BatchPreparedStatementSetter() {
             @Override
             public void setValues(PreparedStatement ps, int i) throws SQLException {
@@ -130,13 +145,14 @@ public class PgVectorKnowledgeRepository {
      */
     public List<ScoredChunk> searchByCosine(float[] queryEmbedding, int candidateK, String column) {
         int k = Math.max(1, candidateK);
+        String safeColumn = safeVectorColumn(column);
         String sql = """
                 SELECT id, document_id, source_id, title, content, token_count, create_time,
                        (1 - (%s <=> ?)) AS vector_score
                 FROM ai_knowledge_chunk
                 ORDER BY %s <=> ?
                 LIMIT ?
-                """.formatted(column, column);
+                """.formatted(safeColumn, safeColumn);
         PGvector vec = new PGvector(queryEmbedding);
         return jdbcTemplate.query(sql, new ScoredChunkMapper(), vec, vec, k);
     }

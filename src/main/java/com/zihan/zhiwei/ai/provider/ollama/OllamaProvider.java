@@ -2,6 +2,8 @@ package com.zihan.zhiwei.ai.provider.ollama;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zihan.zhiwei.ai.provider.AbstractNativeHttpProvider;
+import com.zihan.zhiwei.ai.provider.dto.ProviderChatResponse;
+import com.zihan.zhiwei.ai.provider.nativehttp.CostCalibrationInterceptor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -26,6 +28,8 @@ public class OllamaProvider extends AbstractNativeHttpProvider {
 
     public static final String PROVIDER_NAME = "ollama";
 
+    private final CostCalibrationInterceptor costCalibrationInterceptor;
+
     @Value("${zhiwei.ai.ollama.base-url:http://localhost:11434/v1}")
     private String baseUrl;
 
@@ -38,8 +42,10 @@ public class OllamaProvider extends AbstractNativeHttpProvider {
     @Value("${zhiwei.ai.ollama.timeout-seconds:120}")
     private long timeoutSeconds;
 
-    public OllamaProvider(ObjectMapper objectMapper) {
+    public OllamaProvider(ObjectMapper objectMapper,
+                          CostCalibrationInterceptor costCalibrationInterceptor) {
         super(objectMapper);
+        this.costCalibrationInterceptor = costCalibrationInterceptor;
     }
 
     @Override
@@ -81,6 +87,17 @@ public class OllamaProvider extends AbstractNativeHttpProvider {
 
     @Override
     protected long getTimeoutSeconds() { return timeoutSeconds; }
+
+    // ==================== 钩子覆写 ====================
+
+    /**
+     * Ollama 本地模型需要在同步响应后执行成本校准，写入零成本权重到 Redis。
+     * 路由器读取该权重后，Ollama 将获得 10 倍成本优势（costScore = 1/0.1 = 10）。
+     */
+    @Override
+    protected void afterSyncResponse(ProviderChatResponse response) {
+        costCalibrationInterceptor.calibrate(response);
+    }
 
     // Ollama 默认基类行为已符合需求，无需额外覆写
 }

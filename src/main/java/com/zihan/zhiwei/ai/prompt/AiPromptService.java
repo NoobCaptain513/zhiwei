@@ -20,6 +20,8 @@ public class AiPromptService {
     private static final Map<String, String> INTENT_PROMPTS = Map.of(
             AgentIntent.FAULT, """
                 你是 %s 平台的故障排查助手。
+                当前时间：{{time}}
+                当前用户：{{user}}
                 用户可能遇到了服务异常、报错、宕机等问题。
                 请按以下步骤回答：
                 1. 先描述可能的原因
@@ -29,6 +31,8 @@ public class AiPromptService {
                 """,
             AgentIntent.LOG, """
                 你是 %s 平台的日志查询助手。
+                当前时间：{{time}}
+                当前用户：{{user}}
                 用户需要查看或搜索系统日志。
                 请按以下步骤回答：
                 1. 给出具体的日志查询命令（如 grep、tail、kubectl logs 等）
@@ -38,6 +42,8 @@ public class AiPromptService {
                 """,
             AgentIntent.DEPLOY, """
                 你是 %s 平台的部署发布助手。
+                当前时间：{{time}}
+                当前用户：{{user}}
                 用户可能需要部署、发布、回滚等操作指导。
                 请按以下步骤回答：
                 1. 确认部署目标（环境、服务名）
@@ -47,6 +53,8 @@ public class AiPromptService {
                 """,
             AgentIntent.TICKET, """
                 你是 %s 平台的工单助手。
+                当前时间：{{time}}
+                当前用户：{{user}}
                 用户需要创建、查询或管理工单。
                 请按以下步骤回答：
                 1. 询问或确认工单标题和描述
@@ -56,6 +64,8 @@ public class AiPromptService {
                 """,
             AgentIntent.RAG, """
                 你是 %s 平台的知识问答助手。
+                当前时间：{{time}}
+                当前用户：{{user}}
                 请基于知识库检索结果回答用户问题。
                 如果知识库没有相关内容，请如实说明并给出通用建议。
                 回答要专业、简洁，优先用中文。

@@ -15,12 +15,14 @@ import com.zihan.zhiwei.ai.reply.AgentClarificationService;
 import com.zihan.zhiwei.ai.reply.AgentFallbackHandler;
 import com.zihan.zhiwei.ai.reply.AgentReply;
 import com.zihan.zhiwei.ai.reply.AgentReplyService;
+import com.zihan.zhiwei.ai.safety.SpringAiSafetyAdvisor;
 import com.zihan.zhiwei.ai.stream.AgentStreamResult;
 import com.zihan.zhiwei.ai.stream.StreamResult;
 import com.zihan.zhiwei.ai.tool.OpsAgentToolService;
 import com.zihan.zhiwei.ai.tool.ToolCallResult;
 import com.zihan.zhiwei.ai.tool.ToolResultCollector;
 import com.zihan.zhiwei.ai.usage.UsageRecorder;
+import com.zihan.zhiwei.common.exception.BusinessException;
 import com.zihan.zhiwei.pojo.dto.AgentRequest;
 import com.zihan.zhiwei.pojo.dto.AgentResponse;
 import com.zihan.zhiwei.pojo.entity.Conversation;
@@ -65,6 +67,7 @@ public class AgentServiceImpl implements AgentService {
     private final AgentFallbackHandler fallbackHandler;
     private final AgentReplyService replyService;
     private final AgentClarificationService clarificationService;
+    private final SpringAiSafetyAdvisor safetyAdvisor;
 
     /**
      * P0-3 修复：注入 ObjectMapper 用于 JSON 序列化卡片数据，
@@ -77,6 +80,12 @@ public class AgentServiceImpl implements AgentService {
     @Override
     @Transactional
     public AgentResponse agent(AgentRequest request) {
+        // 安全检查：长度/频率/敏感词/Prompt注入
+        String rejectReason = safetyAdvisor.check(request.userId(), request.message());
+        if (rejectReason != null) {
+            throw new BusinessException(rejectReason);
+        }
+
         toolResultCollector.clear();
 
         Conversation conversation = conversationService.getOrCreate(
@@ -126,8 +135,18 @@ public class AgentServiceImpl implements AgentService {
         List<ProviderChatMessage> providerMessages = buildMessages(
                 systemPrompt, history, toolResultCollector.toContextBlock(), request.message(), request.preferredProvider());
 
-        FailoverResult failoverResult = modelProviderRouter.executeWithFailover(
-                new ProviderChatRequest(request.model(), providerMessages));
+        long agentStart = System.currentTimeMillis();
+        FailoverResult failoverResult;
+        try {
+            failoverResult = modelProviderRouter.executeWithFailover(
+                    new ProviderChatRequest(request.model(), providerMessages));
+        } catch (RuntimeException e) {
+            // 全部 Provider 失败：补记一条 FAILED 用量，保证用量表能追溯彻底失败的请求；不吞异常
+            usageRecorder.recordFailure(conversation.getId(),
+                    failedProviderName(request.preferredProvider()), request.model(),
+                    "agent", System.currentTimeMillis() - agentStart, e.getMessage());
+            throw e;
+        }
         var providerResponse = failoverResult.response();
         String modelText = providerResponse.content();
 
@@ -176,6 +195,12 @@ public class AgentServiceImpl implements AgentService {
     public AgentStreamResult streamAgent(AgentRequest request,
                                           Consumer<String> onToken,
                                           Consumer<String> onCard) {
+        // 安全检查：长度/频率/敏感词/Prompt注入
+        String rejectReason = safetyAdvisor.check(request.userId(), request.message());
+        if (rejectReason != null) {
+            throw new BusinessException(rejectReason);
+        }
+
         toolResultCollector.clear();
 
         Conversation conversation = conversationService.getOrCreate(
@@ -240,7 +265,17 @@ public class AgentServiceImpl implements AgentService {
         };
 
         ProviderChatRequest providerRequest = new ProviderChatRequest(request.model(), providerMessages);
-        StreamResult streamResult = modelProviderRouter.streamChatWithFailover(providerRequest, trackingOnToken);
+        long agentStreamStart = System.currentTimeMillis();
+        StreamResult streamResult;
+        try {
+            streamResult = modelProviderRouter.streamChatWithFailover(providerRequest, trackingOnToken);
+        } catch (RuntimeException e) {
+            // 全部 Provider 失败：补记一条 FAILED 用量；不吞异常
+            usageRecorder.recordFailure(conversation.getId(),
+                    failedProviderName(request.preferredProvider()), request.model(),
+                    "agent", System.currentTimeMillis() - agentStreamStart, e.getMessage());
+            throw e;
+        }
 
         String modelText = fullContent.toString();
         AgentReply reply;
@@ -290,6 +325,11 @@ public class AgentServiceImpl implements AgentService {
     }
 
     // ==================== 私有方法 ====================
+
+    /** 全部 Provider 失败时没有实际命中的 Provider，用首选名兜底，缺省记为 none */
+    private static String failedProviderName(String preferred) {
+        return preferred != null && !preferred.isBlank() ? preferred : "none";
+    }
 
     /**
      * P2-12 修复：流式完成后，在事务中原子地保存助手消息 + 记录 usage。

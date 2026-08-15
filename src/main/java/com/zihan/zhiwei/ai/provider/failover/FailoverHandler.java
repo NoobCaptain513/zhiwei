@@ -162,6 +162,15 @@ public class FailoverHandler {
             }
         }
 
+        // 全军覆没：追加终态事件标记，区别于正常降级；再把降级链路上的事件 flush 到日志，便于追溯依次失败的 Provider
+        String lastProvider = chain.isEmpty() ? "none" : chain.get(chain.size() - 1);
+        events.add(FailoverEvent.of(lastProvider, "none",
+                "ALL_FAILED: " + (lastError != null ? lastError.getClass().getSimpleName() + ": " + safeMsg(lastError) : "unknown")));
+        for (FailoverEvent evt : events) {
+            failoverEventLog.record(evt);
+        }
+        log.warn("[Failover] all providers failed chain={} events={}", chain, events.size());
+
         throw new BusinessException("全部 Provider 调用失败: "
                 + (lastError != null ? lastError.getMessage() : "unknown"));
     }

@@ -49,6 +49,14 @@ public abstract class AbstractEmbeddingClient implements EmbeddingClient {
     /** 是否在请求体中包含 dimensions 字段（DashScope 需要，Ollama 的 nomic-embed-text 不支持） */
     protected abstract boolean includeDimensionsInRequest();
 
+    /**
+     * 单次请求的最大文本条数。超过时 embedBatch 会自动分批。
+     * 默认 25（多数 OpenAI 兼容 embedding API 的常见上限）；子类可覆盖。
+     */
+    protected int getBatchSize() {
+        return 25;
+    }
+
     // ==================== 公共工具方法（P3-20 修复：委托给 ProviderUtils） ====================
 
     protected static String trimSlash(String url) {
@@ -73,6 +81,22 @@ public abstract class AbstractEmbeddingClient implements EmbeddingClient {
         if (texts == null || texts.isEmpty()) {
             return List.of();
         }
+        int batchSize = Math.max(1, getBatchSize());
+        // 不超过单批上限：直接走单请求，避免多余开销
+        if (texts.size() <= batchSize) {
+            return embedSingleBatch(texts);
+        }
+        // 超过上限：按 batchSize 切片，逐批请求，顺序汇总（保证 vectors 顺序严格对应 texts）
+        List<float[]> all = new ArrayList<>(texts.size());
+        for (int i = 0; i < texts.size(); i += batchSize) {
+            int end = Math.min(i + batchSize, texts.size());
+            all.addAll(embedSingleBatch(texts.subList(i, end)));
+        }
+        return all;
+    }
+
+    /** 单批请求：一次 HTTP 调用把 texts 全部向量化（调用方需保证 texts 不超过 API 上限）。 */
+    private List<float[]> embedSingleBatch(List<String> texts) {
         try {
             ObjectNode body = objectMapper.createObjectNode();
             body.put("model", getModel());

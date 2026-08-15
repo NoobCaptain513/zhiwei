@@ -9,7 +9,6 @@ import com.zihan.zhiwei.pojo.dto.UsageRecentItem;
 import com.zihan.zhiwei.pojo.entity.AiUsageLog;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -18,11 +17,14 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 
 /**
  * D9: AI 调用用量记录器
- * 每次调用：写 MySQL 持久化 + 更新 Redis 滑动窗口指标（喂给路由器）
+ * 每次调用：写 MySQL 持久化。
+ * <p>
+ * FIX-7 后：Redis 滑动窗口的写入统一由 ProviderMetrics -> RedisMetricsPersistence 负责，
+ * 本类不再旁路写 Redis，避免同一次调用被重复写入同一个窗口 key。
+ * readRedisWindow 保留为只读工具，读取的是 RedisMetricsPersistence 写入的同一份数据。
  */
 @Slf4j
 @Service
@@ -35,15 +37,10 @@ public class UsageRecorder {
     public static final String STATUS_DEGRADED = "DEGRADED";
     public static final String MODE_CHAT = "chat";
 
-    private static final int DEFAULT_WINDOW_SIZE = 100;
-
     private final AiUsageLogMapper aiUsageLogMapper;
     private final StringRedisTemplate stringRedisTemplate;
     private final CostCalibrationInterceptor costCalibrationInterceptor;
     private final ObjectMapper objectMapper;
-
-    @Value("${zhiwei.ai.router.metrics-window-size:100}")
-    private int windowSize;
 
     /** 记录一次成功（或降级成功）的 AI 调用 */
     public void record(Long conversationId,
@@ -71,9 +68,6 @@ public class UsageRecorder {
         row.setStatus(status);
         row.setCreateTime(LocalDateTime.now());
         aiUsageLogMapper.insert(row);
-
-        // Redis 滑动窗口：供跨实例 / 运维观测，也作为路由闭环数据源
-        pushRedisSample(response.provider(), true, latencyMs, cost.doubleValue());
 
         log.debug("[Usage] recorded id={} provider={} mode={} status={} latencyMs={} cost={}",
                 row.getId(), row.getProvider(), row.getMode(), row.getStatus(), row.getLatencyMs(), cost);
@@ -105,7 +99,6 @@ public class UsageRecorder {
         row.setCreateTime(LocalDateTime.now());
         aiUsageLogMapper.insert(row);
 
-        pushRedisSample(provider, false, latencyMs, 0.0);
         log.warn("[Usage] failure provider={} latencyMs={} err={}", provider, latencyMs, errorMsg);
     }
 
@@ -137,20 +130,6 @@ public class UsageRecorder {
             ));
         }
         return items;
-    }
-
-    private void pushRedisSample(String provider, boolean success, long latencyMs, double cost) {
-        String key = REDIS_WINDOW_KEY_PREFIX + provider;
-        int cap = windowSize > 0 ? windowSize : DEFAULT_WINDOW_SIZE;
-        try {
-            String payload = objectMapper.writeValueAsString(new MetricSample(
-                    success, latencyMs, cost, System.currentTimeMillis()));
-            stringRedisTemplate.opsForList().leftPush(key, payload);
-            stringRedisTemplate.opsForList().trim(key, 0, cap - 1L);
-            stringRedisTemplate.expire(key, 24, TimeUnit.HOURS);
-        } catch (Exception ex) {
-            log.warn("[Usage] write redis window failed provider={}, err={}", provider, ex.getMessage());
-        }
     }
 
     public List<MetricSample> readRedisWindow(String provider) {

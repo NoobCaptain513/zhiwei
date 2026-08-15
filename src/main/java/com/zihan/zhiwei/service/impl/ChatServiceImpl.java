@@ -6,8 +6,10 @@ import com.zihan.zhiwei.ai.provider.dto.ProviderChatRequest;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatResponse;
 import com.zihan.zhiwei.ai.provider.failover.FailoverResult;
 import com.zihan.zhiwei.ai.rag.RagMessageAugmentor;
+import com.zihan.zhiwei.ai.safety.SpringAiSafetyAdvisor;
 import com.zihan.zhiwei.ai.stream.StreamResult;
 import com.zihan.zhiwei.ai.usage.UsageRecorder;
+import com.zihan.zhiwei.common.exception.BusinessException;
 import com.zihan.zhiwei.pojo.dto.ChatRequest;
 import com.zihan.zhiwei.pojo.dto.ChatResponse;
 import com.zihan.zhiwei.pojo.entity.Conversation;
@@ -32,10 +34,17 @@ public class ChatServiceImpl implements ChatService {
     private final ModelProviderRouter modelProviderRouter;
     private final UsageRecorder usageRecorder;
     private final RagMessageAugmentor ragMessageAugmentor;
+    private final SpringAiSafetyAdvisor safetyAdvisor;
 
     @Override
     @Transactional
     public ChatResponse chat(ChatRequest request) {
+        // 安全检查：长度/频率/敏感词/Prompt注入
+        String rejectReason = safetyAdvisor.check(request.userId(), request.message());
+        if (rejectReason != null) {
+            throw new BusinessException(rejectReason);
+        }
+
         Conversation conversation = conversationService.getOrCreate(
                 request.userId(), request.conversationId());
         conversationService.saveMessage(conversation.getId(), "user", request.message());
@@ -49,8 +58,18 @@ public class ChatServiceImpl implements ChatService {
         }
         providerMessages = ragMessageAugmentor.augmentIfEnabled(providerMessages, request.preferredProvider());
 
-        FailoverResult failoverResult = modelProviderRouter.executeWithFailover(
-                new ProviderChatRequest(request.model(), providerMessages));
+        long chatStart = System.currentTimeMillis();
+        FailoverResult failoverResult;
+        try {
+            failoverResult = modelProviderRouter.executeWithFailover(
+                    new ProviderChatRequest(request.model(), providerMessages));
+        } catch (RuntimeException e) {
+            // 全部 Provider 失败：补记一条 FAILED 用量，保证用量表能追溯彻底失败的请求；不吞异常
+            usageRecorder.recordFailure(conversation.getId(),
+                    failedProviderName(request.preferredProvider()), request.model(),
+                    UsageRecorder.MODE_CHAT, System.currentTimeMillis() - chatStart, e.getMessage());
+            throw e;
+        }
         var providerResponse = failoverResult.response();
 
         Message assistantMessage = conversationService.saveMessage(
@@ -80,6 +99,12 @@ public class ChatServiceImpl implements ChatService {
      */
     @Override
     public StreamResult streamChat(ChatRequest request, Consumer<String> onToken) {
+        // 安全检查：长度/频率/敏感词/Prompt注入
+        String rejectReason = safetyAdvisor.check(request.userId(), request.message());
+        if (rejectReason != null) {
+            throw new BusinessException(rejectReason);
+        }
+
         // 1. 会话管理
         Conversation conversation = conversationService.getOrCreate(
                 request.userId(), request.conversationId());
@@ -104,7 +129,17 @@ public class ChatServiceImpl implements ChatService {
 
         // 4. 路由 + 流式调用
         ProviderChatRequest providerRequest = new ProviderChatRequest(request.model(), providerMessages);
-        StreamResult streamResult = modelProviderRouter.streamChatWithFailover(providerRequest, wrappedOnToken);
+        long streamStart = System.currentTimeMillis();
+        StreamResult streamResult;
+        try {
+            streamResult = modelProviderRouter.streamChatWithFailover(providerRequest, wrappedOnToken);
+        } catch (RuntimeException e) {
+            // 全部 Provider 失败：补记一条 FAILED 用量；不吞异常
+            usageRecorder.recordFailure(conversation.getId(),
+                    failedProviderName(request.preferredProvider()), request.model(),
+                    UsageRecorder.MODE_CHAT, System.currentTimeMillis() - streamStart, e.getMessage());
+            throw e;
+        }
 
         // 5. 保存助手消息 + 记录 usage
         String content = fullContent.toString();
@@ -116,6 +151,11 @@ public class ChatServiceImpl implements ChatService {
         saveStreamCompletion(conversation.getId(), content, providerResponse, 0L, false);
 
         return streamResult;
+    }
+
+    /** 全部 Provider 失败时没有实际命中的 Provider，用首选名兜底，缺省记为 none */
+    private static String failedProviderName(String preferred) {
+        return preferred != null && !preferred.isBlank() ? preferred : "none";
     }
 
     /**

@@ -31,6 +31,7 @@ public class AgentFallbackHandler {
     private final RagCardBuilder ragCardBuilder;
     private final ResultCardAssembler resultCardAssembler;
     private final ToolResultCollector toolResultCollector;
+    private final AgentReplyService replyService;
 
     /**
      * 判断是否需要兜底 + 执行兜底。
@@ -65,21 +66,14 @@ public class AgentFallbackHandler {
         // 2. 转成卡片
         List<AgentReply.Card> ragCards = ragCardBuilder.buildCards(hits);
 
-        // 3. 与工具卡片合并（此时工具卡片为空）
-        List<AgentReply.Card> allCards = resultCardAssembler.merge(List.of(), ragCards);
-
-        // 4. 构建兜底回复
-        String fallbackText = modelText != null ? modelText : "抱歉，我没能直接回答这个问题。以下是知识库中的相关内容：";
+        // 3. 构建兜底回复：委托 AgentReplyService.buildFallbackReply，
+        //    它会根据意图定制卡片，并支持 extraCards 扩展
+        String fallbackText = modelText != null ? modelText
+                : "抱歉，我没能直接回答这个问题。以下是知识库中的相关内容：";
         if (!ragCards.isEmpty()) {
             fallbackText += "\n\n（已从知识库检索到 " + ragCards.size() + " 条相关结果，请参考下方卡片）";
         }
-
-        return AgentReply.builder()
-                .text(fallbackText)
-                .cards(allCards)
-                .toolResults(List.of())
-                .intent(intent)
-                .build();
+        return replyService.buildFallbackReply(fallbackText, intent, ragCards);
     }
 
     /** 粗判模型回复是否包含结构化信息（工单号 / 服务器名 / 指标值等） */

@@ -37,6 +37,7 @@ public class KnowledgePipelineConsumer {
     private final SmartChunker smartChunker;
     private final AiRagService aiRagService;
     private final PgVectorKnowledgeRepository pgVectorKnowledgeRepository;
+    private final DocumentEmitterRegistry emitterRegistry;
 
 
     @Value("${zhiwei.ai.knowledge.embed-batch-size:16}")
@@ -211,6 +212,13 @@ public class KnowledgePipelineConsumer {
         doc.setIndexedChunks(indexed);
         doc.setErrorMessage(error);
         documentMapper.updateById(doc);
+
+        // 通过 Redis Pub/Sub 向持有 emitter 的实例推送状态（支持多实例部署）
+        String errorJson = error == null ? "null" : "\"" + error.replace("\"", "\\\"") + "\"";
+        String json = String.format(
+                "{\"status\":\"%s\",\"total\":%d,\"indexed\":%d,\"error\":%s}",
+                status, total, indexed, errorJson);
+        emitterRegistry.publish(doc.getId(), json);
     }
 
     /** 确定性失败标记异常 */

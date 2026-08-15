@@ -1,5 +1,6 @@
 package com.zihan.zhiwei.controller;
 
+import com.zihan.zhiwei.ai.knowledge.pipeline.DocumentEmitterRegistry;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.zihan.zhiwei.ai.knowledge.DocumentParseService;
@@ -15,14 +16,18 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 @Slf4j
 @RestController
@@ -36,6 +41,9 @@ public class DocumentUploadController {
     private final SmartChunker smartChunker;
     private final KnowledgeDocumentMapper documentMapper;
     private final KnowledgePipelineProducer pipelineProducer;
+    private final DocumentEmitterRegistry emitterRegistry;
+
+    private final ExecutorService executor = Executors.newCachedThreadPool();
 
     @PostMapping("/upload")
     @Operation(summary = "上传文档 → document表(PENDING) → 发MQ → 异步解析+分块+入库")
@@ -51,6 +59,41 @@ public class DocumentUploadController {
             return Result.fail(400, String.valueOf(result.get("message")));
         }
         return Result.ok(result);
+    }
+
+    @PostMapping(value = "/upload/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @Operation(summary = "上传文档并通过 SSE 实时推送处理进度（支持多实例）")
+    public SseEmitter uploadStream(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "userId", defaultValue = "user-001") String userId) {
+        SseEmitter emitter = new SseEmitter(300_000L);  // 5 分钟超时
+        executor.execute(() -> {
+            try {
+                if (file.isEmpty()) {
+                    emitter.send(SseEmitter.event().data("{\"status\":\"FAILED\",\"error\":\"文件不能为空\"}"));
+                    emitter.complete();
+                    return;
+                }
+                Map<String, Object> result = handleSingleUpload(file, userId);
+                if (Boolean.FALSE.equals(result.get("success"))) {
+                    emitter.send(SseEmitter.event().data(
+                            "{\"status\":\"FAILED\",\"error\":\"" + result.get("message") + "\"}"));
+                    emitter.complete();
+                    return;
+                }
+                Long docId = (Long) result.get("documentId");
+                // 先注册 emitter，再推 PENDING，保证消费者的推送不会丢失
+                emitterRegistry.register(docId, emitter);
+                emitter.send(SseEmitter.event().data(String.format(
+                        "{\"status\":\"PENDING\",\"documentId\":%d,\"totalChunks\":%d}",
+                        docId, result.getOrDefault("totalChunks", 0))));
+                log.info("[Upload/Stream] emitter registered documentId={}", docId);
+            } catch (Exception e) {
+                log.error("[Upload/Stream] error: {}", e.getMessage(), e);
+                emitter.completeWithError(e);
+            }
+        });
+        return emitter;
     }
 
     @PostMapping("/upload/batch")
