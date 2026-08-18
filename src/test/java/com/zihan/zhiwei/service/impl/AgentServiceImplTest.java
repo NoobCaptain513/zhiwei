@@ -9,6 +9,7 @@ import com.zihan.zhiwei.ai.provider.failover.FailoverResult;
 import com.zihan.zhiwei.ai.rag.RagContextBuilder;
 import com.zihan.zhiwei.ai.rag.RagMessageAugmentor;
 import com.zihan.zhiwei.ai.reply.*;
+import com.zihan.zhiwei.ai.safety.SpringAiSafetyAdvisor;
 import com.zihan.zhiwei.ai.tool.OpsAgentToolService;
 import com.zihan.zhiwei.ai.tool.ToolCallResult;
 import com.zihan.zhiwei.ai.tool.ToolResultCollector;
@@ -18,6 +19,7 @@ import com.zihan.zhiwei.pojo.dto.AgentResponse;
 import com.zihan.zhiwei.pojo.entity.Conversation;
 import com.zihan.zhiwei.pojo.entity.Message;
 import com.zihan.zhiwei.service.ConversationService;
+import com.zihan.zhiwei.service.IdempotencyService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -27,6 +29,8 @@ import org.mockito.*;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -49,6 +53,10 @@ class AgentServiceImplTest {
     @Mock private RagContextBuilder ragContextBuilder;
     @Mock private OpsAgentToolService opsAgentToolService;
     @Mock private AgentFallbackHandler fallbackHandler;
+    @Mock private AgentClarificationService clarificationService;
+    @Mock private SpringAiSafetyAdvisor safetyAdvisor;
+    @Mock private IdempotencyService idempotencyService;
+    @Mock private ObjectProvider<ToolResultCollector> toolResultCollectorProvider;
 
     private ToolResultCollector toolResultCollector = new ToolResultCollector();
     private AgentReplyService replyService;
@@ -60,14 +68,27 @@ class AgentServiceImplTest {
     void setUp() {
         ResultCardAssembler assembler = new ResultCardAssembler(
                 new com.fasterxml.jackson.databind.ObjectMapper());
-        replyService = new AgentReplyService(assembler, toolResultCollector);
+        replyService = new AgentReplyService(assembler, toolResultCollector,
+                new com.fasterxml.jackson.databind.ObjectMapper());
+
+        // 安全校验默认放行
+        when(safetyAdvisor.check(anyString(), anyString())).thenReturn(null);
+        // 幂等默认未命中（不传 idempotencyKey 时不走幂等）
+        when(idempotencyService.resolve(anyString(), isNull(), any())).thenReturn(java.util.Optional.empty());
+        when(idempotencyService.resolve(anyString(), anyString(), any())).thenReturn(java.util.Optional.empty());
+        // ObjectProvider 每次返回新实例，模拟真实的 prototype scope（避免状态累积）
+        when(toolResultCollectorProvider.getObject()).thenAnswer(inv -> new ToolResultCollector());
 
         service = new AgentServiceImpl(
                 conversationService, modelProviderRouter, usageRecorder,
                 intentAnalyzer, promptService,
                 ragMessageAugmentor, ragContextBuilder,
-                opsAgentToolService, toolResultCollector,
-                fallbackHandler, replyService);
+                toolResultCollectorProvider, fallbackHandler, replyService,
+                clarificationService, safetyAdvisor, idempotencyService,
+                new com.fasterxml.jackson.databind.ObjectMapper());
+
+        // opsAgentToolService 是 @Autowired(required=false) 字段（不在构造器里），反射注入 mock
+        ReflectionTestUtils.setField(service, "opsAgentToolService", opsAgentToolService);
     }
 
     // ──────────────────────────────────────────
@@ -81,7 +102,7 @@ class AgentServiceImplTest {
         @Test
         @DisplayName("fault 意图 → 查服务器状态 + 指标 → 返回 AgentResponse")
         void shouldExecuteFaultPipeline() {
-            AgentRequest request = new AgentRequest("u1", null, "nginx-01 宕机了", null, false);
+            AgentRequest request = new AgentRequest("u1", null, "nginx-01 宕机了", null, false, null, null);
             Conversation conv = buildConv();
             when(conversationService.getOrCreate("u1", null)).thenReturn(conv);
             when(conversationService.saveMessage(eq(1L), eq("user"), eq("nginx-01 宕机了")))
@@ -139,7 +160,7 @@ class AgentServiceImplTest {
         @Test
         @DisplayName("log 意图 → 搜索日志")
         void shouldExecuteLogPipeline() {
-            AgentRequest request = new AgentRequest("u1", null, "查看 nginx 错误日志", null, false);
+            AgentRequest request = new AgentRequest("u1", null, "查看 nginx 错误日志", null, false, null, null);
             Conversation conv = buildConv();
             when(conversationService.getOrCreate("u1", null)).thenReturn(conv);
             when(conversationService.saveMessage(anyLong(), eq("user"), anyString())).thenReturn(new Message());
@@ -179,7 +200,7 @@ class AgentServiceImplTest {
                     .data("{\"service\":\"web-server\",\"deploys\":[{\"version\":\"v2.3.1\"}]}").build();
             when(opsAgentToolService.execute(eq("queryDeployHistory"), anyMap())).thenReturn(deployResult);
 
-            AgentResponse response = service.agent(new AgentRequest("u1", null, "部署 web-server v2.3.1", null, false));
+            AgentResponse response = service.agent(new AgentRequest("u1", null, "部署 web-server v2.3.1", null, false, null, null));
 
             assertThat(response.getIntent()).isEqualTo(AgentIntent.DEPLOY);
             verify(opsAgentToolService).execute(eq("queryDeployHistory"), anyMap());
@@ -194,7 +215,7 @@ class AgentServiceImplTest {
                     .data("{\"ticketId\":\"TK-123\",\"status\":\"OPEN\"}").build();
             when(opsAgentToolService.execute(eq("createTicket"), anyMap())).thenReturn(ticketResult);
 
-            AgentResponse response = service.agent(new AgentRequest("u1", null, "创建磁盘告警工单", null, false));
+            AgentResponse response = service.agent(new AgentRequest("u1", null, "创建磁盘告警工单", null, false, null, null));
 
             assertThat(response.getIntent()).isEqualTo(AgentIntent.TICKET);
             verify(opsAgentToolService).execute(eq("createTicket"), anyMap());
@@ -206,11 +227,11 @@ class AgentServiceImplTest {
             setupCommonMocks(AgentIntent.RAG, "Redis 集群的原理是什么");
             // RAG 意图不调任何工具，只走 RagMessageAugmentor 增强
 
-            AgentResponse response = service.agent(new AgentRequest("u1", null, "Redis 集群的原理是什么", null, false));
+            AgentResponse response = service.agent(new AgentRequest("u1", null, "Redis 集群的原理是什么", null, false, null, null));
 
             assertThat(response.getIntent()).isEqualTo(AgentIntent.RAG);
             verify(opsAgentToolService, never()).execute(anyString(), anyMap());
-            verify(ragMessageAugmentor).augmentIfEnabled(anyList());
+            verify(ragMessageAugmentor).augmentIfEnabled(anyList(), isNull());
         }
     }
 
@@ -234,7 +255,7 @@ class AgentServiceImplTest {
             when(fallbackHandler.fallbackIfNeeded(anyString(), anyString(), eq(AgentIntent.FAULT)))
                     .thenReturn(fallbackReply);
 
-            AgentResponse response = service.agent(new AgentRequest("u1", null, "Redis 宕机了", null, false));
+            AgentResponse response = service.agent(new AgentRequest("u1", null, "Redis 宕机了", null, false, null, null));
 
             assertThat(response.getContent()).isEqualTo("兜底回复，参考知识库卡片");
         }
@@ -245,16 +266,26 @@ class AgentServiceImplTest {
     // ──────────────────────────────────────────
 
     @Test
-    @DisplayName("每次 agent 调用前清空工具收集器")
-    void shouldClearCollectorBeforeEachCall() {
-        toolResultCollector.add(ToolCallResult.builder().toolName("prev").success(true).build());
-        assertThat(toolResultCollector.getAll()).hasSize(1);
+    @DisplayName("每次 agent 调用使用独立的 collector 实例（prototype scope）")
+    void shouldUseIndependentCollectorForEachCall() {
+        // 验证 prototype scope：每次调用获取新实例，互不干扰
+        ToolResultCollector collector1 = new ToolResultCollector();
+        ToolResultCollector collector2 = new ToolResultCollector();
+        
+        when(toolResultCollectorProvider.getObject())
+                .thenReturn(collector1)  // 第一次调用
+                .thenReturn(collector2); // 第二次调用
 
         setupCommonMocks(AgentIntent.FAULT, "test");
 
-        service.agent(new AgentRequest("u1", null, "test", null, false));
+        // 第一次调用
+        service.agent(new AgentRequest("u1", null, "test", null, false, null, null));
+        assertThat(collector1.getAll()).hasSize(2);  // 本次调用产生 2 个工具结果
 
-        assertThat(toolResultCollector.getAll()).hasSize(2);
+        // 第二次调用
+        service.agent(new AgentRequest("u1", null, "test", null, false, null, null));
+        assertThat(collector1.getAll()).hasSize(2);  // 第一个 collector 状态不变
+        assertThat(collector2.getAll()).hasSize(2);  // 第二个 collector 有独立状态
     }
 
     // ──────────────────────────────────────────
@@ -277,7 +308,9 @@ class AgentServiceImplTest {
                 .toolName("mock").success(true).data("{}").build();
         when(opsAgentToolService.execute(anyString(), anyMap())).thenReturn(dummyResult);
 
+        // 同时 mock 单参数和双参数版本的 augmentIfEnabled
         when(ragMessageAugmentor.augmentIfEnabled(anyList())).thenAnswer(inv -> inv.getArgument(0));
+        when(ragMessageAugmentor.augmentIfEnabled(anyList(), anyString())).thenAnswer(inv -> inv.getArgument(0));
         when(fallbackHandler.fallbackIfNeeded(anyString(), anyString(), anyString())).thenReturn(null);
 
         ProviderChatResponse providerResp = new ProviderChatResponse(

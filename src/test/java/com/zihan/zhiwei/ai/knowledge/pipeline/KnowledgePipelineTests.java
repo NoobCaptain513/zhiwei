@@ -4,6 +4,7 @@ import com.zihan.zhiwei.ai.knowledge.DocumentChunk;
 import com.zihan.zhiwei.ai.knowledge.DocumentParser;
 import com.zihan.zhiwei.ai.knowledge.SmartChunker;
 import com.zihan.zhiwei.ai.rag.AiRagService;
+import com.zihan.zhiwei.ai.rag.PgVectorKnowledgeRepository;
 import com.zihan.zhiwei.mapper.KnowledgeDocumentMapper;
 import com.zihan.zhiwei.pojo.entity.KnowledgeDocument;
 import org.junit.jupiter.api.BeforeEach;
@@ -45,7 +46,7 @@ class KnowledgePipelineTests {
         void shouldSendToCorrectExchangeAndRouting() {
             KnowledgePipelineProducer producer = new KnowledgePipelineProducer(rabbitTemplate);
 
-            producer.sendDocumentMessage(1L, "u1", "redis.pdf");
+            producer.sendDocumentMessage(1L, "u1", "redis.pdf", new byte[]{1,2,3});
 
             verify(rabbitTemplate).convertAndSend(
                     eq(KnowledgePipelineConfig.EXCHANGE),
@@ -69,7 +70,7 @@ class KnowledgePipelineTests {
         @Test
         @DisplayName("构建 → 字段完整")
         void shouldBuildCorrectly() {
-            KnowledgePipelineMessage msg = new KnowledgePipelineMessage(42L, "u1", "file.pdf");
+            KnowledgePipelineMessage msg = new KnowledgePipelineMessage(42L, "u1", "file.pdf", null);
 
             assertThat(msg.getDocumentId()).isEqualTo(42L);
             assertThat(msg.getUserId()).isEqualTo("u1");
@@ -137,13 +138,16 @@ class KnowledgePipelineTests {
         @Mock private DocumentParser documentParser;
         @Mock private SmartChunker smartChunker;
         @Mock private AiRagService aiRagService;
+        @Mock private PgVectorKnowledgeRepository pgVectorKnowledgeRepository;
+        @Mock private DocumentEmitterRegistry emitterRegistry;
 
         private KnowledgePipelineConsumer consumer;
 
         @BeforeEach
         void setUp() {
             consumer = new KnowledgePipelineConsumer(
-                    documentMapper, documentParser, smartChunker, aiRagService);
+                    documentMapper, documentParser, smartChunker, aiRagService,
+                    pgVectorKnowledgeRepository, emitterRegistry);
         }
 
         @Test
@@ -151,7 +155,7 @@ class KnowledgePipelineTests {
         void shouldWarnWhenDocumentNotFound() {
             when(documentMapper.selectById(42L)).thenReturn(null);
 
-            consumer.onMessage(new KnowledgePipelineMessage(42L, "u1", "ghost.pdf"));
+            consumer.onMessage(new KnowledgePipelineMessage(42L, "u1", "ghost.pdf", null), null);
 
             verify(documentMapper).selectById(42L);
             verify(documentMapper, never()).updateById(ArgumentMatchers.<KnowledgeDocument>any());
@@ -159,11 +163,26 @@ class KnowledgePipelineTests {
 
         @Test
         @DisplayName("onMessage → 找到 doc → 更新 PROCESSING → 成功 → SUCCESS")
-        void shouldProcessDocumentSuccessfully() {
+        void shouldProcessDocumentSuccessfully() throws Exception {
             KnowledgeDocument doc = buildDoc(1L, "redis.pdf", "PENDING");
             when(documentMapper.selectById(1L)).thenReturn(doc);
 
-            consumer.onMessage(new KnowledgePipelineMessage(1L, "u1", "redis.pdf"));
+            String content = "Redis";
+            byte[] fileBytes = content.getBytes(StandardCharsets.UTF_8);
+
+            // Mock 解析和分块
+            DocumentParser.ParseResult parseResult = new DocumentParser.ParseResult(
+                    "redis.pdf", content, "application/pdf", 50);
+            when(documentParser.parse(any(), eq("redis.pdf"))).thenReturn(parseResult);
+
+            DocumentChunk chunk = chunk(0);
+            when(smartChunker.chunk(content, 1L, "redis.pdf"))
+                    .thenReturn(List.of(chunk));
+
+            when(aiRagService.upsertChunksBatch(anyLong(), anyList()))
+                    .thenReturn(1);
+
+            consumer.onMessage(new KnowledgePipelineMessage(1L, "u1", "redis.pdf", fileBytes), null);
 
             // 验证状态流转
             ArgumentCaptor<KnowledgeDocument> captor = ArgumentCaptor.forClass(KnowledgeDocument.class);
@@ -193,8 +212,8 @@ class KnowledgePipelineTests {
             when(smartChunker.chunk(fileContent, 1L, "redis.pdf"))
                     .thenReturn(List.of(chunk));
 
-            when(aiRagService.upsertChunk(anyLong(), anyString(), anyString(), anyString()))
-                    .thenReturn(1L);
+            when(aiRagService.upsertChunksBatch(anyLong(), anyList()))
+                    .thenReturn(1);
 
             consumer.processDocument(doc, stream);
 
@@ -216,7 +235,12 @@ class KnowledgePipelineTests {
             when(documentParser.parse(any(), eq("bad.pdf")))
                     .thenThrow(new RuntimeException("PDF 解析失败"));
 
-            consumer.processDocument(doc, stream);
+            // processDocument 会抛出异常
+            try {
+                consumer.processDocument(doc, stream);
+            } catch (RuntimeException e) {
+                // 预期的异常，忽略
+            }
 
             ArgumentCaptor<KnowledgeDocument> captor = ArgumentCaptor.forClass(KnowledgeDocument.class);
             verify(documentMapper, atLeastOnce()).updateById(captor.capture());
@@ -240,6 +264,11 @@ class KnowledgePipelineTests {
             DocumentChunk c1 = chunk(0), c2 = chunk(1), c3 = chunk(2);
             when(smartChunker.chunk(content, 1L, "redis.pdf"))
                     .thenReturn(List.of(c1, c2, c3));
+            
+            // upsertChunksBatch 失败，降级到逐个 upsertChunk
+            when(aiRagService.upsertChunksBatch(anyLong(), anyList()))
+                    .thenThrow(new RuntimeException("batch failed"));
+            
             when(aiRagService.upsertChunk(anyLong(), anyString(), anyString(), anyString()))
                     .thenReturn(1L)
                     .thenThrow(new RuntimeException("embedding failed"))

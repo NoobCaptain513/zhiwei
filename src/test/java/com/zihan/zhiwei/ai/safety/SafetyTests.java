@@ -3,11 +3,31 @@ package com.zihan.zhiwei.ai.safety;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.ObjectProvider;
+
+import java.util.function.Consumer;
+import java.util.function.Supplier;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 @DisplayName("安全防护体系测试")
 class SafetyTests {
+
+    /** 无 LLM 裁判的 ObjectProvider（getIfAvailable 返回 null → 跳过 LLM 判定层） */
+    private static ObjectProvider<LlmInjectionJudge> emptyJudgeProvider() {
+        return new ObjectProvider<>() {
+            @Override public LlmInjectionJudge getObject() { return null; }
+            @Override public LlmInjectionJudge getObject(Object... args) { return null; }
+            @Override public LlmInjectionJudge getIfAvailable() { return null; }
+            @Override public LlmInjectionJudge getIfUnique() { return null; }
+            @Override public void ifAvailable(Consumer<LlmInjectionJudge> dependencyConsumer) { }
+            @Override public void ifUnique(Consumer<LlmInjectionJudge> dependencyConsumer) { }
+            @Override public Stream<LlmInjectionJudge> stream() { return Stream.empty(); }
+            @Override public LlmInjectionJudge getIfAvailable(Supplier<LlmInjectionJudge> defaultSupplier) { return null; }
+            @Override public LlmInjectionJudge getIfUnique(Supplier<LlmInjectionJudge> defaultSupplier) { return null; }
+        };
+    }
 
     // ──────────────────────────────────────────
     // SensitiveWordFilter
@@ -81,7 +101,7 @@ class SafetyTests {
     @DisplayName("PromptInjectionDetector 注入检测")
     class InjectionDetectorTests {
 
-        private final PromptInjectionDetector detector = new PromptInjectionDetector();
+        private final PromptInjectionDetector detector = new PromptInjectionDetector(emptyJudgeProvider());
 
         @Test
         @DisplayName("正常消息 → 通过")
@@ -170,7 +190,7 @@ class SafetyTests {
     class SafetyAdvisorTests {
 
         private final SpringAiSafetyAdvisor advisor = new SpringAiSafetyAdvisor(
-                new SensitiveWordFilter(), new PromptInjectionDetector());
+                new SensitiveWordFilter(), new PromptInjectionDetector(emptyJudgeProvider()));
 
         @Test
         @DisplayName("正常消息 → 全部通过")

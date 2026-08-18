@@ -36,6 +36,8 @@ class AiStreamTests {
     @Mock private ProviderMetrics providerMetrics;
     @Mock private HealthMonitor healthMonitor;
     @Mock private CostCalibrationInterceptor costCalibrationInterceptor;
+    @Mock private com.zihan.zhiwei.ai.provider.probe.ModelProbeService probeService;
+    @Mock private com.zihan.zhiwei.ai.provider.health.FailoverEventLog failoverEventLog;
 
     @BeforeEach
     void setUp() {
@@ -43,6 +45,8 @@ class AiStreamTests {
         lenient().when(providerMetrics.snapshot(anyString()))
                 .thenReturn(new ProviderMetrics.Snapshot("test", 10, 10, 0, 1.0, 50, 40));
         lenient().when(costCalibrationInterceptor.readWeight(anyString())).thenReturn(1.0);
+        // 首包探测默认直通（不拦截任何候选），避免流式路由测试被探测逻辑干扰
+        lenient().when(probeService.filterAvailable(anyList())).thenAnswer(inv -> inv.getArgument(0));
     }
 
     // ──────────────────────────────────────────
@@ -327,7 +331,9 @@ class AiStreamTests {
                 providerMetrics,
                 null,   // FailoverHandler
                 healthMonitor,
-                costCalibrationInterceptor
+                costCalibrationInterceptor,
+                probeService,
+                failoverEventLog
         );
     }
 }

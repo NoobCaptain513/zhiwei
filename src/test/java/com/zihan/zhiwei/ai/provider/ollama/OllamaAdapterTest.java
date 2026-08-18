@@ -43,7 +43,7 @@ class OllamaAdapterTest {
 
         @BeforeEach
         void setUp() {
-            provider = new OllamaProvider(objectMapper);
+            provider = new OllamaProvider(objectMapper, null);
             ReflectionTestUtils.setField(provider, "baseUrl", "http://localhost:11434/v1");
             ReflectionTestUtils.setField(provider, "apiKey", "ollama");
             ReflectionTestUtils.setField(provider, "defaultModel", "qwen2.5:7b");
@@ -73,8 +73,8 @@ class OllamaAdapterTest {
                 // Ollama 在运行 → 返回正常
                 assertThat(result.provider()).isEqualTo("ollama");
             } catch (com.zihan.zhiwei.common.exception.BusinessException e) {
-                // Ollama 未运行 → 抛异常
-                assertThat(e.getMessage()).contains("Ollama Provider 调用");
+                // Ollama 未运行 → 抛异常（name() 返回小写 "ollama"）
+                assertThat(e.getMessage()).contains("ollama Provider 调用");
             }
         }
 
@@ -147,7 +147,7 @@ class OllamaAdapterTest {
         @Test
         @DisplayName("embedBatch 空列表 → 返回空")
         void shouldReturnEmptyForNullInput() {
-            assertThat(client.embedBatch(null)).isEmpty();
+            assertThat(client.embedBatch((List<String>) null)).isEmpty();
             assertThat(client.embedBatch(List.of())).isEmpty();
         }
 

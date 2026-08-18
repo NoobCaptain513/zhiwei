@@ -18,8 +18,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -116,7 +115,7 @@ class RagMessageAugmentorTest {
         @Test
         @DisplayName("RAG 检索无结果 → 返回原消息")
         void shouldReturnUnchangedWhenRagEmpty() {
-            when(ragContextBuilder.buildContextBlock(USER_MSG)).thenReturn("");
+            when(ragContextBuilder.buildContextBlock(eq(USER_MSG), isNull(), isNull())).thenReturn("");
             List<ProviderChatMessage> messages = List.of(
                     new ProviderChatMessage("user", USER_MSG));
 
@@ -128,7 +127,7 @@ class RagMessageAugmentorTest {
         @Test
         @DisplayName("RAG 返回 null → 返回原消息")
         void shouldReturnUnchangedWhenRagNull() {
-            when(ragContextBuilder.buildContextBlock(USER_MSG)).thenReturn(null);
+            when(ragContextBuilder.buildContextBlock(eq(USER_MSG), isNull(), isNull())).thenReturn(null);
             List<ProviderChatMessage> messages = List.of(
                     new ProviderChatMessage("user", USER_MSG));
 
@@ -149,7 +148,7 @@ class RagMessageAugmentorTest {
         @Test
         @DisplayName("单条 user 消息 → 前置 system + 原消息")
         void shouldPrependSystemMessage() {
-            when(ragContextBuilder.buildContextBlock(USER_MSG)).thenReturn(RAG_BLOCK);
+            when(ragContextBuilder.buildContextBlock(eq(USER_MSG), isNull(), isNull())).thenReturn(RAG_BLOCK);
             List<ProviderChatMessage> messages = List.of(
                     new ProviderChatMessage("user", USER_MSG));
 
@@ -165,7 +164,7 @@ class RagMessageAugmentorTest {
         @Test
         @DisplayName("多轮对话 → 用最后一条 user 消息检索，system 插入最前")
         void shouldUseLastUserMessageForRag() {
-            when(ragContextBuilder.buildContextBlock("第三个问题")).thenReturn(RAG_BLOCK);
+            when(ragContextBuilder.buildContextBlock(eq("第三个问题"), anyString(), isNull())).thenReturn(RAG_BLOCK);
             List<ProviderChatMessage> messages = List.of(
                     new ProviderChatMessage("system", "你是工程师"),
                     new ProviderChatMessage("user", "第一个问题"),
@@ -182,13 +181,13 @@ class RagMessageAugmentorTest {
             assertThat(result.get(1).role()).isEqualTo("system");
             assertThat(result.get(1).content()).isEqualTo("你是工程师");
 
-            verify(ragContextBuilder).buildContextBlock("第三个问题");
+            verify(ragContextBuilder).buildContextBlock(eq("第三个问题"), anyString(), isNull());
         }
 
         @Test
         @DisplayName("大小写不敏感匹配 user 角色")
         void shouldMatchUserCaseInsensitively() {
-            when(ragContextBuilder.buildContextBlock("Hello")).thenReturn(RAG_BLOCK);
+            when(ragContextBuilder.buildContextBlock(eq("Hello"), isNull(), isNull())).thenReturn(RAG_BLOCK);
             List<ProviderChatMessage> messages = List.of(
                     new ProviderChatMessage("User", "Hello"));
 
@@ -201,7 +200,7 @@ class RagMessageAugmentorTest {
         @Test
         @DisplayName("原消息列表不被修改 → 返回新列表")
         void shouldNotMutateOriginalMessages() {
-            when(ragContextBuilder.buildContextBlock(USER_MSG)).thenReturn(RAG_BLOCK);
+            when(ragContextBuilder.buildContextBlock(eq(USER_MSG), isNull(), isNull())).thenReturn(RAG_BLOCK);
             List<ProviderChatMessage> messages = new ArrayList<>(List.of(
                     new ProviderChatMessage("user", USER_MSG)));
 
@@ -214,19 +213,19 @@ class RagMessageAugmentorTest {
         @Test
         @DisplayName("检索 query 取最后一条 user 消息的 content，trim 处理")
         void shouldTrimUserMessageForQuery() {
-            when(ragContextBuilder.buildContextBlock("Redis 扩容")).thenReturn(RAG_BLOCK);
+            when(ragContextBuilder.buildContextBlock(eq("Redis 扩容"), isNull(), isNull())).thenReturn(RAG_BLOCK);
             List<ProviderChatMessage> messages = List.of(
                     new ProviderChatMessage("user", "  Redis 扩容  "));
 
             augmentor.augmentIfEnabled(messages);
 
-            verify(ragContextBuilder).buildContextBlock("Redis 扩容");
+            verify(ragContextBuilder).buildContextBlock(eq("Redis 扩容"), isNull(), isNull());
         }
 
         @Test
         @DisplayName("user 在前 assist 在后的单轮对话")
         void shouldHandleSingleTurn() {
-            when(ragContextBuilder.buildContextBlock("帮我查日志")).thenReturn(RAG_BLOCK);
+            when(ragContextBuilder.buildContextBlock(eq("帮我查日志"), isNull(), isNull())).thenReturn(RAG_BLOCK);
             List<ProviderChatMessage> messages = List.of(
                     new ProviderChatMessage("system", "初始 prompt"),
                     new ProviderChatMessage("user", "帮我查日志"));
@@ -252,7 +251,7 @@ class RagMessageAugmentorTest {
         @Test
         @DisplayName("增强结果 → 发给任意 Provider，所有 Provider 看到相同 context")
         void shouldProvideConsistentContextToAllProviders() {
-            when(ragContextBuilder.buildContextBlock(USER_MSG)).thenReturn(RAG_BLOCK);
+            when(ragContextBuilder.buildContextBlock(eq(USER_MSG), isNull(), isNull())).thenReturn(RAG_BLOCK);
             List<ProviderChatMessage> messages = List.of(
                     new ProviderChatMessage("user", USER_MSG));
 

@@ -50,6 +50,7 @@ class RouterFailoverIntegrationTest {
     @Mock private HealthMonitor healthMonitor;
     @Mock private CostCalibrationInterceptor costCalibrationInterceptor;
     @Mock private FailoverEventLog failoverEventLog;
+    @Mock private com.zihan.zhiwei.ai.provider.probe.ModelProbeService probeService;
 
     private ModelProvider springAI;
     private ModelProvider langchain4j;
@@ -75,6 +76,8 @@ class RouterFailoverIntegrationTest {
         // native保持默认(可直接mock streamChat做真流式)
 
         lenient().when(healthMonitor.isHealthy(anyString())).thenReturn(true);
+        // 首包探测默认直通，避免流式降级测试被探测逻辑拦截
+        lenient().when(probeService.filterAvailable(anyList())).thenAnswer(inv -> inv.getArgument(0));
         lenient().when(providerMetrics.snapshot(anyString()))
                 .thenReturn(new ProviderMetrics.Snapshot("test", 10, 10, 0, 1.0, 50, 40));
         lenient().when(costCalibrationInterceptor.readWeight(anyString())).thenReturn(1.0);
@@ -94,11 +97,13 @@ class RouterFailoverIntegrationTest {
 
         failoverHandler = new FailoverHandler(
                 List.of(springAI, langchain4j, nativeProvider),
-                cbRegistry, providerMetrics, env, true, 1, failoverEventLog);
+                cbRegistry, providerMetrics, env, true, 1, failoverEventLog,
+                probeService, new com.zihan.zhiwei.ai.provider.probe.FirstPacketProbeConfig());
 
         router = new ModelProviderRouter(
                 List.of(springAI, langchain4j, nativeProvider),
-                providerMetrics, failoverHandler, healthMonitor, costCalibrationInterceptor);
+                providerMetrics, failoverHandler, healthMonitor, costCalibrationInterceptor,
+                probeService, failoverEventLog);
     }
 
     // ──────────────────────────────────────────

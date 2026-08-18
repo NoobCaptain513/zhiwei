@@ -1,7 +1,10 @@
 package com.zihan.zhiwei.ai.rag;
 
 import com.zihan.zhiwei.ai.embedding.CompatibleEmbeddingClient;
+import com.zihan.zhiwei.ai.embedding.EmbeddingClientSelector;
+import com.zihan.zhiwei.ai.knowledge.TokenCounter;
 import com.zihan.zhiwei.ai.rag.dto.KnowledgeChunk;
+import com.zihan.zhiwei.ai.rag.dto.QueryRewriteResult;
 import com.zihan.zhiwei.ai.rag.dto.RagHit;
 import com.zihan.zhiwei.common.exception.BusinessException;
 import org.junit.jupiter.api.BeforeEach;
@@ -33,18 +36,34 @@ class AiRagServiceTest {
 
     @Mock private CompatibleEmbeddingClient embeddingClient;
     @Mock private PgVectorKnowledgeRepository repository;
+    @Mock private QueryRewriter queryRewriter;
+    @Mock private EmbeddingClientSelector embeddingSelector;
 
     private AiRagService ragService;
+    private final RrfFusion rrfFusion = new RrfFusion();
+    private final MultiQueryAggregator multiQueryAggregator = new MultiQueryAggregator();
+    private final TokenCounter tokenCounter = new TokenCounter();
 
     @Captor private ArgumentCaptor<float[]> embeddingCaptor;
 
     @BeforeEach
     void setUp() {
-        ragService = new AiRagService(embeddingClient, repository);
+        // rerank 默认关闭（rerank-enabled=false）→ 恒等返回，构造器依赖传 null 即可
+        RagReranker reranker = new RagReranker(null, new com.fasterxml.jackson.databind.ObjectMapper());
+        ragService = new AiRagService(embeddingClient, repository, rrfFusion, reranker,
+                queryRewriter, multiQueryAggregator, tokenCounter, embeddingSelector);
         ReflectionTestUtils.setField(ragService, "defaultCandidateK", 20);
         ReflectionTestUtils.setField(ragService, "defaultTopK", 5);
-        ReflectionTestUtils.setField(ragService, "vectorWeight", 0.85);
-        ReflectionTestUtils.setField(ragService, "lexicalWeight", 0.15);
+        ReflectionTestUtils.setField(ragService, "vectorWeight", 1.0);
+        ReflectionTestUtils.setField(ragService, "keywordWeight", 0.5);
+        ReflectionTestUtils.setField(ragService, "rrfK", 60.0);
+        // 查询改写默认原样返回（单查询路径）
+        when(queryRewriter.rewrite(anyString(), any())).thenAnswer(inv -> {
+            String q = inv.getArgument(0);
+            return new QueryRewriteResult(q, q, List.of());
+        });
+        // 关键词通道默认空结果，避免 RRF 融合 NPE
+        when(repository.searchByKeyword(anyString(), anyInt())).thenReturn(List.of());
     }
 
     // ──────────────────────────────────────────
@@ -149,14 +168,14 @@ class AiRagServiceTest {
                     scoredChunk(1L, "Redis 集群扩容指南", "详细的 Redis 集群扩容步骤...", 0.92),
                     scoredChunk(2L, "Redis 监控指标", "Redis 集群的监控指标包括...", 0.85),
                     scoredChunk(3L, "数据库备份", "每日数据库备份策略...", 0.45));
-            when(repository.searchByCosine(any(float[].class), anyInt())).thenReturn(recalled);
+            when(repository.searchByCosine(any(float[].class), anyInt(), anyString())).thenReturn(recalled);
 
             List<RagHit> hits = ragService.search("Redis 集群扩容", 2, 10);
 
             assertThat(hits).hasSize(2);
+            // RRF 融合：向量排名第一的 chunk（0.92）得分最高
             assertThat(hits.get(0).chunk().title()).isEqualTo("Redis 集群扩容指南");
-            assertThat(hits.get(0).finalScore()).isCloseTo(0.92 * 0.85 + lexicalPart("Redis 集群扩容", "详细的 Redis 集群扩容步骤..."), offset(0.001));
-            assertThat(hits.get(1).finalScore()).isLessThan(hits.get(0).finalScore());
+            assertThat(hits.get(0).finalScore()).isGreaterThan(hits.get(1).finalScore());
         }
 
         @Test
@@ -167,7 +186,7 @@ class AiRagServiceTest {
 
             List<PgVectorKnowledgeRepository.ScoredChunk> recalled = List.of(
                     scoredChunk(1L, "title", "content", 0.8));
-            when(repository.searchByCosine(any(float[].class), anyInt())).thenReturn(recalled);
+            when(repository.searchByCosine(any(float[].class), anyInt(), anyString())).thenReturn(recalled);
 
             List<RagHit> hits = ragService.search("test", 5, 10);
 
@@ -179,7 +198,7 @@ class AiRagServiceTest {
         void shouldReturnEmptyWhenNothingRecalled() {
             float[] mockVec = new float[]{0.1f};
             when(embeddingClient.embed(anyString())).thenReturn(mockVec);
-            when(repository.searchByCosine(any(float[].class), anyInt())).thenReturn(Collections.emptyList());
+            when(repository.searchByCosine(any(float[].class), anyInt(), anyString())).thenReturn(Collections.emptyList());
 
             List<RagHit> hits = ragService.search("nonexistent");
 
@@ -206,11 +225,11 @@ class AiRagServiceTest {
 
             List<PgVectorKnowledgeRepository.ScoredChunk> recalled = List.of(
                     scoredChunk(1L, "a", "b", 0.1));
-            when(repository.searchByCosine(any(float[].class), anyInt())).thenReturn(recalled);
+            when(repository.searchByCosine(any(float[].class), anyInt(), anyString())).thenReturn(recalled);
 
             ragService.search("test", 10, 3);
 
-            verify(repository).searchByCosine(any(float[].class), eq(10));
+            verify(repository).searchByCosine(any(float[].class), eq(10), anyString());
         }
 
         @Test
@@ -218,7 +237,7 @@ class AiRagServiceTest {
         void shouldUseDefaultTopKWhenNull() {
             float[] mockVec = new float[]{0.1f};
             when(embeddingClient.embed(anyString())).thenReturn(mockVec);
-            when(repository.searchByCosine(any(float[].class), anyInt())).thenReturn(
+            when(repository.searchByCosine(any(float[].class), anyInt(), anyString())).thenReturn(
                     java.util.stream.IntStream.range(0, 20)
                             .mapToObj(i -> scoredChunk((long) i, "t" + i, "c" + i, 0.9 - i * 0.01))
                             .toList());
@@ -233,7 +252,7 @@ class AiRagServiceTest {
         void shouldUseDefaultsWithSearchQueryOnly() {
             float[] mockVec = new float[]{0.1f};
             when(embeddingClient.embed(anyString())).thenReturn(mockVec);
-            when(repository.searchByCosine(any(float[].class), eq(20))).thenReturn(
+            when(repository.searchByCosine(any(float[].class), eq(20), anyString())).thenReturn(
                     java.util.stream.IntStream.range(0, 20)
                             .mapToObj(i -> scoredChunk((long) i, "t" + i, "c" + i, 0.9 - i * 0.01))
                             .toList());
@@ -260,14 +279,16 @@ class AiRagServiceTest {
 
             List<PgVectorKnowledgeRepository.ScoredChunk> recalled = List.of(
                     scoredChunk(1L, "title", "Redis 集群扩容", 1.0));
-            when(repository.searchByCosine(any(float[].class), anyInt())).thenReturn(recalled);
+            when(repository.searchByCosine(any(float[].class), anyInt(), anyString())).thenReturn(recalled);
 
             List<RagHit> hits = ragService.search("Redis 集群扩容", 1, 1);
             RagHit hit = hits.get(0);
 
             assertThat(hit.vectorScore()).isCloseTo(1.0, offset(0.001));
-            assertThat(hit.lexicalScore()).isCloseTo(1.0, offset(0.001));
-            assertThat(hit.finalScore()).isCloseTo(1.0, offset(0.001));
+            // 关键词通道为空 → 字面分为 0
+            assertThat(hit.lexicalScore()).isCloseTo(0.0, offset(0.001));
+            // RRF 单通道：vectorWeight/(k+rank) = 1.0/61
+            assertThat(hit.finalScore()).isCloseTo(1.0 / 61.0, offset(0.001));
         }
 
         @Test
@@ -278,7 +299,7 @@ class AiRagServiceTest {
 
             List<PgVectorKnowledgeRepository.ScoredChunk> recalled = List.of(
                     scoredChunk(1L, "title", "content", Double.NaN));
-            when(repository.searchByCosine(any(float[].class), anyInt())).thenReturn(recalled);
+            when(repository.searchByCosine(any(float[].class), anyInt(), anyString())).thenReturn(recalled);
 
             List<RagHit> hits = ragService.search("test", 1, 1);
 
@@ -293,7 +314,7 @@ class AiRagServiceTest {
 
             List<PgVectorKnowledgeRepository.ScoredChunk> recalled = List.of(
                     scoredChunk(1L, "title", "content", 1.5));
-            when(repository.searchByCosine(any(float[].class), anyInt())).thenReturn(recalled);
+            when(repository.searchByCosine(any(float[].class), anyInt(), anyString())).thenReturn(recalled);
 
             List<RagHit> hits = ragService.search("test", 1, 1);
 
@@ -305,7 +326,7 @@ class AiRagServiceTest {
         void shouldEmbedCorrectQueryText() {
             float[] mockVec = new float[]{0.1f};
             when(embeddingClient.embed(anyString())).thenReturn(mockVec);
-            when(repository.searchByCosine(any(float[].class), anyInt())).thenReturn(
+            when(repository.searchByCosine(any(float[].class), anyInt(), anyString())).thenReturn(
                     List.of(scoredChunk(1L, "t", "c", 0.5)));
 
             ragService.search("  Redis 集群扩容  ", 1, 1);
@@ -358,9 +379,11 @@ class AiRagServiceTest {
             when(repository.insert(anyLong(), anyString(), anyString(), anyString(), any(float[].class), anyInt()))
                     .thenReturn(1L);
 
-            ragService.upsertChunk(1L, "s", "t", "ABCDEF");  // 6 chars → 3 tokens
+            ragService.upsertChunk(1L, "s", "t", "ABCDEF");
 
-            verify(repository).insert(anyLong(), anyString(), anyString(), anyString(), any(float[].class), eq(3));
+            // FIX-9: 真实 BPE 计数（jtokkit），非 length/2 估算
+            int expected = new TokenCounter().count("ABCDEF");
+            verify(repository).insert(anyLong(), anyString(), anyString(), anyString(), any(float[].class), eq(expected));
         }
     }
 

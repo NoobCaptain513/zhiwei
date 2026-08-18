@@ -16,6 +16,7 @@ import com.zihan.zhiwei.pojo.entity.Conversation;
 import com.zihan.zhiwei.pojo.entity.Message;
 import com.zihan.zhiwei.service.ChatService;
 import com.zihan.zhiwei.service.ConversationService;
+import com.zihan.zhiwei.service.IdempotencyService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -23,6 +24,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.function.Consumer;
 
 @Slf4j
@@ -35,6 +37,7 @@ public class ChatServiceImpl implements ChatService {
     private final UsageRecorder usageRecorder;
     private final RagMessageAugmentor ragMessageAugmentor;
     private final SpringAiSafetyAdvisor safetyAdvisor;
+    private final IdempotencyService idempotencyService;
 
     @Override
     @Transactional
@@ -43,6 +46,13 @@ public class ChatServiceImpl implements ChatService {
         String rejectReason = safetyAdvisor.check(request.userId(), request.message());
         if (rejectReason != null) {
             throw new BusinessException(rejectReason);
+        }
+
+        // 幂等快速路径：同一 idempotencyKey 已处理过 → 直接返回首次结果，不重复调用 LLM
+        Optional<ChatResponse> idemCached = idempotencyService.resolve(
+                request.userId(), request.idempotencyKey(), ChatResponse.class);
+        if (idemCached.isPresent()) {
+            return idemCached.get();
         }
 
         Conversation conversation = conversationService.getOrCreate(
@@ -83,7 +93,7 @@ public class ChatServiceImpl implements ChatService {
                 failoverResult.latencyMs(),
                 failoverResult.degraded());
 
-        return new ChatResponse(
+        ChatResponse response = new ChatResponse(
                 conversation.getId(),
                 assistantMessage.getId(),
                 providerResponse.content(),
@@ -91,6 +101,9 @@ public class ChatServiceImpl implements ChatService {
                 providerResponse.provider(),
                 providerResponse.totalTokens()
         );
+        // 幂等记录：缓存首次成功结果，重试命中直接返回
+        idempotencyService.remember(request.userId(), request.idempotencyKey(), response);
+        return response;
     }
 
     /**
@@ -103,6 +116,18 @@ public class ChatServiceImpl implements ChatService {
         String rejectReason = safetyAdvisor.check(request.userId(), request.message());
         if (rejectReason != null) {
             throw new BusinessException(rejectReason);
+        }
+
+        // 幂等快速路径：命中缓存 → 重放首次完整内容，不重新调用 LLM
+        Optional<ChatResponse> idemCached = idempotencyService.resolve(
+                request.userId(), request.idempotencyKey(), ChatResponse.class);
+        if (idemCached.isPresent()) {
+            ChatResponse cached = idemCached.get();
+            if (cached.content() != null && !cached.content().isEmpty()) {
+                onToken.accept(cached.content());
+            }
+            log.info("[Idempotency] streamChat replay cached key={}", request.idempotencyKey());
+            return StreamResult.of(cached.model(), cached.provider(), 0, cached.totalTokens());
         }
 
         // 1. 会话管理
@@ -149,6 +174,12 @@ public class ChatServiceImpl implements ChatService {
 
         // P2-12 修复：将最后的 DB 写入抽为 @Transactional 原子方法
         saveStreamCompletion(conversation.getId(), content, providerResponse, 0L, false);
+
+        // 幂等记录：缓存首次流式结果（含完整文本 + 元数据），重试时重放
+        idempotencyService.remember(request.userId(), request.idempotencyKey(),
+                new ChatResponse(conversation.getId(), null, content,
+                        providerResponse.model(), providerResponse.provider(),
+                        providerResponse.totalTokens()));
 
         return streamResult;
     }

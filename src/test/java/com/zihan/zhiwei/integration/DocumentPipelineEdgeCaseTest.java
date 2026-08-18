@@ -28,7 +28,7 @@ class DocumentPipelineEdgeCaseTest {
 
     @BeforeEach
     void setUp() {
-        chunker = new SmartChunker();
+        chunker = new SmartChunker(new com.zihan.zhiwei.ai.knowledge.TokenCounter());
         ReflectionTestUtils.setField(chunker, "maxTokens", 512);
         ReflectionTestUtils.setField(chunker, "overlapTokens", 64);
     }

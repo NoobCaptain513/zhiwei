@@ -102,7 +102,7 @@ class McpTests {
 
             @SuppressWarnings("unchecked")
             Map<String, Object> result = (Map<String, Object>) response.get("result");
-            assertThat(result.get("protocolVersion")).isEqualTo("2024-11-05");
+            assertThat(result.get("protocolVersion")).isEqualTo("2025-03-26");
         }
 
         @Test
@@ -135,8 +135,11 @@ class McpTests {
                             "arguments", Map.of("hostname", "redis-01"))));
 
             assertThat(response.get("jsonrpc")).isEqualTo("2.0");
-            McpToolService.McpToolResult result = (McpToolService.McpToolResult) response.get("result");
-            assertThat(result.isError()).isFalse();
+            @SuppressWarnings("unchecked")
+            Map<String, Object> result = (Map<String, Object>) response.get("result");
+            // isError 字段仅在为 true 时存在，不存在表示成功
+            assertThat(result.containsKey("isError")).isFalse();
+            assertThat(result.get("content")).isNotNull();
         }
 
         @Test
@@ -200,7 +203,10 @@ class McpTests {
 
         @BeforeEach
         void setUp() {
-            toolService = new McpToolService(opsAgentToolService, aiRagService);
+            toolService = new McpToolService(aiRagService);
+            // opsAgentToolService 是 @Autowired(required=false) 字段，反射注入
+            org.springframework.test.util.ReflectionTestUtils.setField(
+                    toolService, "opsAgentToolService", opsAgentToolService);
         }
 
         @Test

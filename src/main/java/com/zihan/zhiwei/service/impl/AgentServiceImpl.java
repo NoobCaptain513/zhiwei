@@ -29,6 +29,7 @@ import com.zihan.zhiwei.pojo.entity.Conversation;
 import com.zihan.zhiwei.pojo.entity.Message;
 import com.zihan.zhiwei.service.AgentService;
 import com.zihan.zhiwei.service.ConversationService;
+import com.zihan.zhiwei.service.IdempotencyService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
@@ -39,6 +40,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.function.Consumer;
 
 /**
@@ -74,6 +76,7 @@ public class AgentServiceImpl implements AgentService {
     private final AgentReplyService replyService;
     private final AgentClarificationService clarificationService;
     private final SpringAiSafetyAdvisor safetyAdvisor;
+    private final IdempotencyService idempotencyService;
 
     /**
      * P0-3 修复：注入 ObjectMapper 用于 JSON 序列化卡片数据，
@@ -90,6 +93,13 @@ public class AgentServiceImpl implements AgentService {
         String rejectReason = safetyAdvisor.check(request.userId(), request.message());
         if (rejectReason != null) {
             throw new BusinessException(rejectReason);
+        }
+
+        // 幂等快速路径：同一 idempotencyKey 已处理过 → 直接返回首次结果，不重复调用 LLM
+        Optional<AgentResponse> idemCached = idempotencyService.resolve(
+                request.userId(), request.idempotencyKey(), AgentResponse.class);
+        if (idemCached.isPresent()) {
+            return idemCached.get();
         }
 
         // prototype scope：每次调用获取一个全新实例，线程安全，无 request 上下文依赖
@@ -183,7 +193,7 @@ public class AgentServiceImpl implements AgentService {
                 reply.getCards() == null ? 0 : reply.getCards().size(),
                 failoverResult.degraded());
 
-        return AgentResponse.builder()
+        AgentResponse response = AgentResponse.builder()
                 .conversationId(conversation.getId())
                 .messageId(assistantMessage.getId())
                 .content(reply.getText())
@@ -194,6 +204,10 @@ public class AgentServiceImpl implements AgentService {
                 .totalTokens(providerResponse.totalTokens())
                 .degraded(failoverResult.degraded())
                 .build();
+
+        // 幂等记录：缓存首次成功结果，重试命中直接返回
+        idempotencyService.remember(request.userId(), request.idempotencyKey(), response);
+        return response;
     }
 
     // ==================== D15+D29: 流式 Agent ====================
@@ -206,6 +220,25 @@ public class AgentServiceImpl implements AgentService {
         String rejectReason = safetyAdvisor.check(request.userId(), request.message());
         if (rejectReason != null) {
             throw new BusinessException(rejectReason);
+        }
+
+        // 幂等快速路径：命中缓存 → 重放首次内容 + 卡片，不重新调用 LLM
+        Optional<AgentStreamResult> idemCached = idempotencyService.resolve(
+                request.userId(), request.idempotencyKey(), AgentStreamResult.class);
+        if (idemCached.isPresent()) {
+            AgentStreamResult cached = idemCached.get();
+            if (cached.getContent() != null && !cached.getContent().isEmpty()) {
+                onToken.accept(cached.getContent());
+            }
+            if (cached.getCards() != null && !cached.getCards().isEmpty()) {
+                try {
+                    onCard.accept(objectMapper.writeValueAsString(cached.getCards()));
+                } catch (Exception e) {
+                    log.warn("[Idempotency] replay card failed: {}", e.getMessage());
+                }
+            }
+            log.info("[Idempotency] streamAgent replay cached key={}", request.idempotencyKey());
+            return cached;
         }
 
         // prototype scope：每次调用获取一个全新实例，线程安全，无 request 上下文依赖
@@ -319,7 +352,7 @@ public class AgentServiceImpl implements AgentService {
                 reply.getCards() == null ? 0 : reply.getCards().size(),
                 streamResult.totalTokens());
 
-        return AgentStreamResult.builder()
+        AgentStreamResult result = AgentStreamResult.builder()
                 .conversationId(conversation.getId())
                 .messageId(assistantMessage.getId())
                 .content(modelText)
@@ -330,6 +363,10 @@ public class AgentServiceImpl implements AgentService {
                 .totalTokens(streamResult.totalTokens())
                 .degraded(false)
                 .build();
+
+        // 幂等记录：缓存首次流式结果（含完整文本 + 卡片），重试时重放
+        idempotencyService.remember(request.userId(), request.idempotencyKey(), result);
+        return result;
     }
 
     // ==================== 私有方法 ====================

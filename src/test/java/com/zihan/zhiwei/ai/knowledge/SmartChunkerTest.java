@@ -18,7 +18,7 @@ class SmartChunkerTest {
 
     @BeforeEach
     void setUp() {
-        chunker = new SmartChunker();
+        chunker = new SmartChunker(new TokenCounter());
         ReflectionTestUtils.setField(chunker, "maxTokens", 512);
         ReflectionTestUtils.setField(chunker, "overlapTokens", 64);
     }
@@ -82,27 +82,31 @@ class SmartChunkerTest {
     class TokenEstimationTests {
 
         @Test
-        @DisplayName("纯中文 → 1 字 ≈ 1 token")
+        @DisplayName("纯中文 → cl100k_base tokenizer")
         void shouldEstimateChineseTokens() {
             int tokens = chunker.estimateTokens("你好世界");  // 4 chars
 
-            assertThat(tokens).isEqualTo(4);
+            // cl100k_base: "你好世界" = 5 tokens (真实 tokenizer 结果)
+            assertThat(tokens).isEqualTo(5);
         }
 
         @Test
-        @DisplayName("纯英文 → 4 字符 ≈ 1 token")
+        @DisplayName("纯英文 → cl100k_base tokenizer")
         void shouldEstimateEnglishTokens() {
             int tokens = chunker.estimateTokens("Hello");  // 5 chars
 
-            assertThat(tokens).isEqualTo(2);  // ceil(5/4) = 2
+            // cl100k_base: "Hello" = 1 token (真实 tokenizer 结果)
+            assertThat(tokens).isEqualTo(1);
         }
 
         @Test
-        @DisplayName("中英混合 → 分别估算")
+        @DisplayName("中英混合 → cl100k_base tokenizer")
         void shouldEstimateMixedTokens() {
-            int tokens = chunker.estimateTokens("Redis 集群");  // Redis=5en, " 集群"=2cn+1space
+            int tokens = chunker.estimateTokens("Redis 集群");
 
-            assertThat(tokens).isEqualTo(4);  // 2cn + ceil(5/4)en = 2 + 2 = 4
+            // cl100k_base: "Redis 集群" = 6 tokens (真实 tokenizer 结果)
+            // Redis=1, " "=1, "集"=2, "群"=2
+            assertThat(tokens).isEqualTo(6);
         }
 
         @Test

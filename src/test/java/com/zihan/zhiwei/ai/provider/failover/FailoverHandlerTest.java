@@ -6,6 +6,8 @@ import com.zihan.zhiwei.ai.provider.dto.ProviderChatMessage;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatRequest;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatResponse;
 import com.zihan.zhiwei.ai.provider.health.FailoverEventLog;
+import com.zihan.zhiwei.ai.provider.probe.FirstPacketProbeConfig;
+import com.zihan.zhiwei.ai.provider.probe.ModelProbeService;
 import com.zihan.zhiwei.common.exception.BusinessException;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
@@ -39,6 +41,8 @@ class FailoverHandlerTest {
     @Mock private ModelProvider nativeProvider;
     @Mock private ProviderMetrics providerMetrics;
     @Mock private FailoverEventLog failoverEventLog;
+    @Mock private ModelProbeService probeService;
+    private final FirstPacketProbeConfig probeConfig = new FirstPacketProbeConfig();
 
     private CircuitBreakerRegistry cbRegistry;
     private MockEnvironment environment;
@@ -75,7 +79,8 @@ class FailoverHandlerTest {
 
     private FailoverHandler handler(boolean retryEnabled, int maxAttempts) {
         List<ModelProvider> providers = List.of(springAiProvider, langchain4jProvider, nativeProvider);
-        return new FailoverHandler(providers, cbRegistry, providerMetrics, environment, retryEnabled, maxAttempts, failoverEventLog);
+        return new FailoverHandler(providers, cbRegistry, providerMetrics, environment,
+                retryEnabled, maxAttempts, failoverEventLog, probeService, probeConfig);
     }
 
     // ──────────────────────────────────────────

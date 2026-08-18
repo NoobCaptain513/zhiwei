@@ -23,5 +23,8 @@ public record ChatRequest(
         String model,
 
         /** 指定 Provider，可选（如 "ollama", "native-dashscope"），用于 RAG Embedding 选择 */
-        String preferredProvider
+        String preferredProvider,
+
+        /** 幂等键（可选）：客户端重试时携带同一 UUID，服务端返回首次处理结果，避免重复扣费 */
+        String idempotencyKey
 ) {}

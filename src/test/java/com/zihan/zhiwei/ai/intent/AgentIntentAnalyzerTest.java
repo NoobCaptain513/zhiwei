@@ -11,7 +11,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @DisplayName("AgentIntentAnalyzer 意图识别测试")
 class AgentIntentAnalyzerTest {
 
-    private final AgentIntentAnalyzer analyzer = new AgentIntentAnalyzer();
+    private final AgentIntentAnalyzer analyzer = new AgentIntentAnalyzer(new IntentTree());
 
     @Nested
     @DisplayName("单意图匹配")

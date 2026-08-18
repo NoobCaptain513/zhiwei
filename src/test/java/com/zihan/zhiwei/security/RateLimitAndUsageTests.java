@@ -100,12 +100,13 @@ class RateLimitAndUsageTests {
         @Mock private HttpServletResponse response;
 
         private final ObjectMapper objectMapper = new ObjectMapper();
+        private final com.zihan.zhiwei.security.JwtProperties jwtProperties = new com.zihan.zhiwei.security.JwtProperties();
 
         private RateLimitInterceptor interceptor;
 
         @BeforeEach
         void setUp() {
-            interceptor = new RateLimitInterceptor(rateLimiter, objectMapper);
+            interceptor = new RateLimitInterceptor(rateLimiter, objectMapper, jwtProperties);
         }
 
         @Test

@@ -1,22 +1,34 @@
 package com.zihan.zhiwei.ai.provider;
 
 import com.zihan.zhiwei.ai.provider.nativehttp.CostCalibrationInterceptor;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 
+import java.lang.reflect.Field;
 import java.math.BigDecimal;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * 测试成本计算修复：验证 Ollama 本地模型零成本
+ * 纯单元测试，不加载 Spring 上下文，避免依赖数据库/Redis。
  */
-@SpringBootTest
 public class CostCalibrationFixTest {
 
-    @Autowired
     private CostCalibrationInterceptor costCalibrationInterceptor;
+
+    @BeforeEach
+    public void setUp() throws Exception {
+        costCalibrationInterceptor = new CostCalibrationInterceptor(null);
+        setField("promptPricePer1k", 0.004);
+        setField("completionPricePer1k", 0.012);
+    }
+
+    private void setField(String name, double value) throws Exception {
+        Field field = CostCalibrationInterceptor.class.getDeclaredField(name);
+        field.setAccessible(true);
+        field.set(costCalibrationInterceptor, value);
+    }
 
     @Test
     public void testOllamaCostShouldBeZero() {

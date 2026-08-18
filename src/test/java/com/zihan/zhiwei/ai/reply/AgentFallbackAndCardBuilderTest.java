@@ -36,8 +36,10 @@ class AgentFallbackAndCardBuilderTest {
         ragCardBuilder = new RagCardBuilder();
         resultCardAssembler = new ResultCardAssembler(new com.fasterxml.jackson.databind.ObjectMapper());
         toolResultCollector = new ToolResultCollector();
+        AgentReplyService replyService = new AgentReplyService(
+                resultCardAssembler, toolResultCollector, new com.fasterxml.jackson.databind.ObjectMapper());
         fallbackHandler = new AgentFallbackHandler(
-                aiRagService, ragCardBuilder, resultCardAssembler, toolResultCollector);
+                aiRagService, ragCardBuilder, resultCardAssembler, toolResultCollector, replyService);
     }
 
     // ──────────────────────────────────────────
