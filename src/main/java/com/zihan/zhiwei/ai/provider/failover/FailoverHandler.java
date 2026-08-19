@@ -79,7 +79,19 @@ public class FailoverHandler {
     }
 
     public FailoverResult execute(String primaryProvider, ProviderChatRequest request) {
-        List<String> chain = buildChain(primaryProvider);
+        ModelProvider primary = providerMap.get(primaryProvider);
+        List<ModelProvider> ranked = primary == null ? List.of() : List.of(primary);
+        return execute(primaryProvider, request, ranked);
+    }
+
+    /**
+     * Execute against candidates already ranked by ModelProviderRouter.
+     * The configured failover chain is only used to append providers that were
+     * not included in the ranked candidate list.
+     */
+    public FailoverResult execute(String primaryProvider, ProviderChatRequest request,
+                                  List<ModelProvider> rankedProviders) {
+        List<String> chain = buildChain(rankedProviders);
 
         // D28: 首包探测
         Set<String> probeDead = preProbe(chain);
@@ -210,10 +222,15 @@ public class FailoverHandler {
                 .collect(Collectors.toSet());
     }
 
-    private List<String> buildChain(String primary) {
+    private List<String> buildChain(List<ModelProvider> rankedProviders) {
         List<String> chain = new ArrayList<>();
-        if (primary != null && !primary.isBlank()) {
-            chain.add(primary);
+        if (rankedProviders != null) {
+            for (ModelProvider provider : rankedProviders) {
+                if (provider != null && provider.name() != null
+                        && !provider.name().isBlank() && !chain.contains(provider.name())) {
+                    chain.add(provider.name());
+                }
+            }
         }
         for (String name : failoverChain) {
             if (!chain.contains(name)) {
