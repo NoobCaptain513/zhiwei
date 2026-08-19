@@ -179,8 +179,12 @@ class KnowledgePipelineTests {
             when(smartChunker.chunk(content, 1L, "redis.pdf"))
                     .thenReturn(List.of(chunk));
 
-            when(aiRagService.upsertChunksBatch(anyLong(), anyList()))
-                    .thenReturn(1);
+            // Mock upsertChunksBatch 返回实际处理的 chunk 数量
+            when(aiRagService.upsertChunksBatch(eq(1L), anyList()))
+                    .thenAnswer(invocation -> {
+                        List<?> chunks = invocation.getArgument(1);
+                        return chunks.size(); // 返回批量处理的数量
+                    });
 
             consumer.onMessage(new KnowledgePipelineMessage(1L, "u1", "redis.pdf", fileBytes), null);
 
@@ -212,8 +216,12 @@ class KnowledgePipelineTests {
             when(smartChunker.chunk(fileContent, 1L, "redis.pdf"))
                     .thenReturn(List.of(chunk));
 
-            when(aiRagService.upsertChunksBatch(anyLong(), anyList()))
-                    .thenReturn(1);
+            // Mock upsertChunksBatch 返回实际处理的 chunk 数量
+            when(aiRagService.upsertChunksBatch(eq(1L), anyList()))
+                    .thenAnswer(invocation -> {
+                        List<?> chunks = invocation.getArgument(1);
+                        return chunks.size(); // 返回批量处理的数量
+                    });
 
             consumer.processDocument(doc, stream);
 
@@ -266,13 +274,14 @@ class KnowledgePipelineTests {
                     .thenReturn(List.of(c1, c2, c3));
             
             // upsertChunksBatch 失败，降级到逐个 upsertChunk
-            when(aiRagService.upsertChunksBatch(anyLong(), anyList()))
+            when(aiRagService.upsertChunksBatch(eq(1L), anyList()))
                     .thenThrow(new RuntimeException("batch failed"));
             
-            when(aiRagService.upsertChunk(anyLong(), anyString(), anyString(), anyString()))
-                    .thenReturn(1L)
-                    .thenThrow(new RuntimeException("embedding failed"))
-                    .thenReturn(1L);
+            // 逐个处理：第1个成功，第2个失败，第3个成功 → 总共成功2个
+            when(aiRagService.upsertChunk(eq(1L), anyString(), anyString(), anyString()))
+                    .thenReturn(1L)  // chunk 0 成功
+                    .thenThrow(new RuntimeException("embedding failed"))  // chunk 1 失败
+                    .thenReturn(1L); // chunk 2 成功
 
             consumer.processDocument(doc, stream);
 
@@ -281,7 +290,7 @@ class KnowledgePipelineTests {
             KnowledgeDocument finalDoc = captor.getAllValues().get(captor.getAllValues().size() - 1);
             assertThat(finalDoc.getStatus()).isEqualTo("SUCCESS");
             assertThat(finalDoc.getTotalChunks()).isEqualTo(3);
-            assertThat(finalDoc.getIndexedChunks()).isEqualTo(2);  // 1 failed
+            assertThat(finalDoc.getIndexedChunks()).isEqualTo(2);  // 2个成功，1个失败
         }
     }
 

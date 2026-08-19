@@ -122,6 +122,7 @@ public abstract class AbstractEmbeddingClient implements EmbeddingClient {
                         + " body=" + safeBody(response.body()));
             }
 
+
             JsonNode root = objectMapper.readTree(response.body());
             JsonNode data = root.path("data");
             if (!data.isArray() || data.isEmpty()) {
