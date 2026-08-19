@@ -16,7 +16,7 @@ import com.zihan.zhiwei.pojo.entity.Conversation;
 import com.zihan.zhiwei.pojo.entity.Message;
 import com.zihan.zhiwei.service.ChatService;
 import com.zihan.zhiwei.service.ConversationService;
-import com.zihan.zhiwei.service.IdempotencyService;
+import com.zihan.zhiwei.service.IdempotentRequestCache;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -37,7 +37,7 @@ public class ChatServiceImpl implements ChatService {
     private final UsageRecorder usageRecorder;
     private final RagMessageAugmentor ragMessageAugmentor;
     private final SpringAiSafetyAdvisor safetyAdvisor;
-    private final IdempotencyService idempotencyService;
+    private final IdempotentRequestCache idempotencyService;
 
     @Override
     @Transactional
@@ -48,62 +48,80 @@ public class ChatServiceImpl implements ChatService {
             throw new BusinessException(rejectReason);
         }
 
-        // 幂等快速路径：同一 idempotencyKey 已处理过 → 直接返回首次结果，不重复调用 LLM
+        // 幂等快速路径：同一 namespace + idempotencyKey 已处理过 → 直接返回首次结果
+        String idemNamespace = "chat";
+        String requestFingerprint = idempotencyService.fingerprint(idemNamespace, request);
         Optional<ChatResponse> idemCached = idempotencyService.resolve(
-                request.userId(), request.idempotencyKey(), ChatResponse.class);
+                idemNamespace, request.userId(), request.idempotencyKey(), ChatResponse.class, requestFingerprint);
         if (idemCached.isPresent()) {
             return idemCached.get();
         }
 
-        Conversation conversation = conversationService.getOrCreate(
-                request.userId(), request.conversationId());
-        conversationService.saveMessage(conversation.getId(), "user", request.message());
-
-        List<Message> history = conversationService.listMessages(conversation.getId());
-        List<ProviderChatMessage> providerMessages = new ArrayList<>();
-        int maxHistory = 20; // P2-17 修复：截断历史，防止超出模型 context 限制
-        int start = Math.max(0, history.size() - maxHistory);
-        for (int i = start; i < history.size(); i++) {
-            providerMessages.add(new ProviderChatMessage(history.get(i).getRole(), history.get(i).getContent()));
+        IdempotentRequestCache.IdempotencyLease idemLease = idempotencyService.acquire(
+                idemNamespace, request.userId(), request.idempotencyKey(), requestFingerprint, 300);
+        if (!idemLease.acquired() && idemLease.enabled()) {
+            Optional<ChatResponse> waited = idempotencyService.resolve(
+                    idemNamespace, request.userId(), request.idempotencyKey(), ChatResponse.class, requestFingerprint);
+            if (waited.isPresent()) {
+                return waited.get();
+            }
+            throw new BusinessException("幂等处理超时，请稍后重试");
         }
-        providerMessages = ragMessageAugmentor.augmentIfEnabled(providerMessages, request.preferredProvider());
 
-        long chatStart = System.currentTimeMillis();
-        FailoverResult failoverResult;
         try {
-            failoverResult = modelProviderRouter.executeWithFailover(
-                    new ProviderChatRequest(request.model(), providerMessages));
-        } catch (RuntimeException e) {
-            // 全部 Provider 失败：补记一条 FAILED 用量，保证用量表能追溯彻底失败的请求；不吞异常
-            usageRecorder.recordFailure(conversation.getId(),
-                    failedProviderName(request.preferredProvider()), request.model(),
-                    UsageRecorder.MODE_CHAT, System.currentTimeMillis() - chatStart, e.getMessage());
+            Conversation conversation = conversationService.getOrCreate(
+                    request.userId(), request.conversationId());
+            conversationService.saveMessage(conversation.getId(), "user", request.message());
+
+            List<Message> history = conversationService.listMessages(conversation.getId());
+            List<ProviderChatMessage> providerMessages = new ArrayList<>();
+            int maxHistory = 20; // P2-17 修复：截断历史，防止超出模型 context 限制
+            int start = Math.max(0, history.size() - maxHistory);
+            for (int i = start; i < history.size(); i++) {
+                providerMessages.add(new ProviderChatMessage(history.get(i).getRole(), history.get(i).getContent()));
+            }
+            providerMessages = ragMessageAugmentor.augmentIfEnabled(providerMessages, request.preferredProvider());
+
+            long chatStart = System.currentTimeMillis();
+            FailoverResult failoverResult;
+            try {
+                failoverResult = modelProviderRouter.executeWithFailover(
+                        new ProviderChatRequest(request.model(), providerMessages));
+            } catch (RuntimeException e) {
+                // 全部 Provider 失败：补记一条 FAILED 用量，保证用量表能追溯彻底失败的请求；不吞异常
+                usageRecorder.recordFailure(conversation.getId(),
+                        failedProviderName(request.preferredProvider()), request.model(),
+                        UsageRecorder.MODE_CHAT, System.currentTimeMillis() - chatStart, e.getMessage());
+                idempotencyService.release(idemLease);
+                throw e;
+            }
+            var providerResponse = failoverResult.response();
+
+            Message assistantMessage = conversationService.saveMessage(
+                    conversation.getId(), "assistant", providerResponse.content());
+
+            usageRecorder.record(
+                    conversation.getId(),
+                    assistantMessage.getId(),
+                    providerResponse,
+                    UsageRecorder.MODE_CHAT,
+                    failoverResult.latencyMs(),
+                    failoverResult.degraded());
+
+            ChatResponse response = new ChatResponse(
+                    conversation.getId(),
+                    assistantMessage.getId(),
+                    providerResponse.content(),
+                    providerResponse.model(),
+                    providerResponse.provider(),
+                    providerResponse.totalTokens()
+            );
+            idempotencyService.remember(idemLease, requestFingerprint, response);
+            return response;
+        } catch (Exception e) {
+            idempotencyService.release(idemLease);
             throw e;
         }
-        var providerResponse = failoverResult.response();
-
-        Message assistantMessage = conversationService.saveMessage(
-                conversation.getId(), "assistant", providerResponse.content());
-
-        usageRecorder.record(
-                conversation.getId(),
-                assistantMessage.getId(),
-                providerResponse,
-                UsageRecorder.MODE_CHAT,
-                failoverResult.latencyMs(),
-                failoverResult.degraded());
-
-        ChatResponse response = new ChatResponse(
-                conversation.getId(),
-                assistantMessage.getId(),
-                providerResponse.content(),
-                providerResponse.model(),
-                providerResponse.provider(),
-                providerResponse.totalTokens()
-        );
-        // 幂等记录：缓存首次成功结果，重试命中直接返回
-        idempotencyService.remember(request.userId(), request.idempotencyKey(), response);
-        return response;
     }
 
     /**
@@ -119,8 +137,11 @@ public class ChatServiceImpl implements ChatService {
         }
 
         // 幂等快速路径：命中缓存 → 重放首次完整内容，不重新调用 LLM
+        String idemNamespace = "chat-stream";
+        String requestFingerprint = idempotencyService.fingerprint(idemNamespace, request);
         Optional<ChatResponse> idemCached = idempotencyService.resolve(
-                request.userId(), request.idempotencyKey(), ChatResponse.class);
+                idemNamespace, request.userId(), request.idempotencyKey(), ChatResponse.class,
+                requestFingerprint);
         if (idemCached.isPresent()) {
             ChatResponse cached = idemCached.get();
             if (cached.content() != null && !cached.content().isEmpty()) {
@@ -130,58 +151,79 @@ public class ChatServiceImpl implements ChatService {
             return StreamResult.of(cached.model(), cached.provider(), 0, cached.totalTokens());
         }
 
-        // 1. 会话管理
-        Conversation conversation = conversationService.getOrCreate(
-                request.userId(), request.conversationId());
-        conversationService.saveMessage(conversation.getId(), "user", request.message());
-
-        // 2. 加载历史 + RAG 增强
-        List<Message> history = conversationService.listMessages(conversation.getId());
-        List<ProviderChatMessage> providerMessages = new ArrayList<>();
-        int maxHistory = 20; // P2-17 修复：截断历史，防止超出模型 context 限制
-        int start = Math.max(0, history.size() - maxHistory);
-        for (int i = start; i < history.size(); i++) {
-            providerMessages.add(new ProviderChatMessage(history.get(i).getRole(), history.get(i).getContent()));
+        IdempotentRequestCache.IdempotencyLease idemLease = idempotencyService.acquire(
+                idemNamespace, request.userId(), request.idempotencyKey(), requestFingerprint, 300);
+        if (!idemLease.acquired() && idemLease.enabled()) {
+            Optional<ChatResponse> waited = idempotencyService.resolve(
+                    idemNamespace, request.userId(), request.idempotencyKey(), ChatResponse.class,
+                    requestFingerprint);
+            if (waited.isPresent()) {
+                ChatResponse cached = waited.get();
+                if (cached.content() != null && !cached.content().isEmpty()) {
+                    onToken.accept(cached.content());
+                }
+                return StreamResult.of(cached.model(), cached.provider(), 0, cached.totalTokens());
+            }
+            throw new BusinessException("幂等处理超时，请稍后重试");
         }
-        providerMessages = ragMessageAugmentor.augmentIfEnabled(providerMessages, request.preferredProvider());
 
-        // 3. 收集完整文本（流式 + 入库）
-        StringBuilder fullContent = new StringBuilder();
-        Consumer<String> wrappedOnToken = token -> {
-            fullContent.append(token);
-            onToken.accept(token);
-        };
-
-        // 4. 路由 + 流式调用
-        ProviderChatRequest providerRequest = new ProviderChatRequest(request.model(), providerMessages);
-        long streamStart = System.currentTimeMillis();
-        StreamResult streamResult;
         try {
-            streamResult = modelProviderRouter.streamChatWithFailover(providerRequest, wrappedOnToken);
-        } catch (RuntimeException e) {
-            // 全部 Provider 失败：补记一条 FAILED 用量；不吞异常
-            usageRecorder.recordFailure(conversation.getId(),
-                    failedProviderName(request.preferredProvider()), request.model(),
-                    UsageRecorder.MODE_CHAT, System.currentTimeMillis() - streamStart, e.getMessage());
+            // 1. 会话管理
+            Conversation conversation = conversationService.getOrCreate(
+                    request.userId(), request.conversationId());
+            conversationService.saveMessage(conversation.getId(), "user", request.message());
+
+            // 2. 加载历史 + RAG 增强
+            List<Message> history = conversationService.listMessages(conversation.getId());
+            List<ProviderChatMessage> providerMessages = new ArrayList<>();
+            int maxHistory = 20; // P2-17 修复：截断历史，防止超出模型 context 限制
+            int start = Math.max(0, history.size() - maxHistory);
+            for (int i = start; i < history.size(); i++) {
+                providerMessages.add(new ProviderChatMessage(history.get(i).getRole(), history.get(i).getContent()));
+            }
+            providerMessages = ragMessageAugmentor.augmentIfEnabled(providerMessages, request.preferredProvider());
+
+            // 3. 收集完整文本（流式 + 入库）
+            StringBuilder fullContent = new StringBuilder();
+            Consumer<String> wrappedOnToken = token -> {
+                fullContent.append(token);
+                onToken.accept(token);
+            };
+
+            // 4. 路由 + 流式调用
+            ProviderChatRequest providerRequest = new ProviderChatRequest(request.model(), providerMessages);
+            long streamStart = System.currentTimeMillis();
+            StreamResult streamResult;
+            try {
+                streamResult = modelProviderRouter.streamChatWithFailover(providerRequest, wrappedOnToken);
+            } catch (RuntimeException e) {
+                // 全部 Provider 失败：补记一条 FAILED 用量；不吞异常
+                usageRecorder.recordFailure(conversation.getId(),
+                        failedProviderName(request.preferredProvider()), request.model(),
+                        UsageRecorder.MODE_CHAT, System.currentTimeMillis() - streamStart, e.getMessage());
+                idempotencyService.release(idemLease);
+                throw e;
+            }
+
+            // 5. 保存助手消息 + 记录 usage
+            String content = fullContent.toString();
+            ProviderChatResponse providerResponse = new ProviderChatResponse(
+                    content, streamResult.model(), streamResult.provider(),
+                    streamResult.promptTokens(), streamResult.completionTokens(), streamResult.totalTokens());
+
+            // P2-12 修复：将最后的 DB 写入抽为 @Transactional 原子方法
+            saveStreamCompletion(conversation.getId(), content, providerResponse, 0L, false);
+
+            idempotencyService.remember(idemLease, requestFingerprint,
+                    new ChatResponse(conversation.getId(), null, content,
+                            providerResponse.model(), providerResponse.provider(),
+                            providerResponse.totalTokens()));
+
+            return streamResult;
+        } catch (Exception e) {
+            idempotencyService.release(idemLease);
             throw e;
         }
-
-        // 5. 保存助手消息 + 记录 usage
-        String content = fullContent.toString();
-        ProviderChatResponse providerResponse = new ProviderChatResponse(
-                content, streamResult.model(), streamResult.provider(),
-                streamResult.promptTokens(), streamResult.completionTokens(), streamResult.totalTokens());
-
-        // P2-12 修复：将最后的 DB 写入抽为 @Transactional 原子方法
-        saveStreamCompletion(conversation.getId(), content, providerResponse, 0L, false);
-
-        // 幂等记录：缓存首次流式结果（含完整文本 + 元数据），重试时重放
-        idempotencyService.remember(request.userId(), request.idempotencyKey(),
-                new ChatResponse(conversation.getId(), null, content,
-                        providerResponse.model(), providerResponse.provider(),
-                        providerResponse.totalTokens()));
-
-        return streamResult;
     }
 
     /** 全部 Provider 失败时没有实际命中的 Provider，用首选名兜底，缺省记为 none */

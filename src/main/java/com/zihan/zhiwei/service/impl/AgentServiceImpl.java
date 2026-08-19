@@ -29,7 +29,7 @@ import com.zihan.zhiwei.pojo.entity.Conversation;
 import com.zihan.zhiwei.pojo.entity.Message;
 import com.zihan.zhiwei.service.AgentService;
 import com.zihan.zhiwei.service.ConversationService;
-import com.zihan.zhiwei.service.IdempotencyService;
+import com.zihan.zhiwei.service.IdempotentRequestCache;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
@@ -76,7 +76,7 @@ public class AgentServiceImpl implements AgentService {
     private final AgentReplyService replyService;
     private final AgentClarificationService clarificationService;
     private final SpringAiSafetyAdvisor safetyAdvisor;
-    private final IdempotencyService idempotencyService;
+    private final IdempotentRequestCache idempotencyService;
 
     /**
      * P0-3 修复：注入 ObjectMapper 用于 JSON 序列化卡片数据，
@@ -95,12 +95,29 @@ public class AgentServiceImpl implements AgentService {
             throw new BusinessException(rejectReason);
         }
 
-        // 幂等快速路径：同一 idempotencyKey 已处理过 → 直接返回首次结果，不重复调用 LLM
+        // 幂等快速路径：同一 namespace + idempotencyKey 已处理过 → 直接返回首次结果
+        String idemNamespace = "agent";
+        String requestFingerprint = idempotencyService.fingerprint(idemNamespace, request);
         Optional<AgentResponse> idemCached = idempotencyService.resolve(
-                request.userId(), request.idempotencyKey(), AgentResponse.class);
+                idemNamespace, request.userId(), request.idempotencyKey(), AgentResponse.class,
+                requestFingerprint);
         if (idemCached.isPresent()) {
             return idemCached.get();
         }
+
+        IdempotentRequestCache.IdempotencyLease idemLease = idempotencyService.acquire(
+                idemNamespace, request.userId(), request.idempotencyKey(), requestFingerprint, 300);
+        if (!idemLease.acquired() && idemLease.enabled()) {
+            Optional<AgentResponse> waited = idempotencyService.resolve(
+                    idemNamespace, request.userId(), request.idempotencyKey(), AgentResponse.class,
+                    requestFingerprint);
+            if (waited.isPresent()) {
+                return waited.get();
+            }
+            throw new BusinessException("幂等处理超时，请稍后重试");
+        }
+
+        try {
 
         // prototype scope：每次调用获取一个全新实例，线程安全，无 request 上下文依赖
         ToolResultCollector toolResultCollector = toolResultCollectorProvider.getObject();
@@ -125,7 +142,7 @@ public class AgentServiceImpl implements AgentService {
             log.info("[Agent] clarify userId={} options={}",
                     request.userId(),
                     clarifyReply.getCards() == null ? 0 : clarifyReply.getCards().size());
-            return AgentResponse.builder()
+            AgentResponse clarificationResponse = AgentResponse.builder()
                     .conversationId(conversation.getId())
                     .messageId(assistantMessage.getId())
                     .content(clarifyReply.getText())
@@ -136,6 +153,8 @@ public class AgentServiceImpl implements AgentService {
                     .totalTokens(0)
                     .degraded(false)
                     .build();
+            idempotencyService.remember(idemLease, requestFingerprint, clarificationResponse);
+            return clarificationResponse;
         }
 
         String systemPrompt = promptService.buildSystemPrompt(primaryIntent, Map.of(
@@ -205,9 +224,12 @@ public class AgentServiceImpl implements AgentService {
                 .degraded(failoverResult.degraded())
                 .build();
 
-        // 幂等记录：缓存首次成功结果，重试命中直接返回
-        idempotencyService.remember(request.userId(), request.idempotencyKey(), response);
+        idempotencyService.remember(idemLease, requestFingerprint, response);
         return response;
+        } catch (Exception e) {
+            idempotencyService.release(idemLease);
+            throw e;
+        }
     }
 
     // ==================== D15+D29: 流式 Agent ====================
@@ -223,8 +245,11 @@ public class AgentServiceImpl implements AgentService {
         }
 
         // 幂等快速路径：命中缓存 → 重放首次内容 + 卡片，不重新调用 LLM
+        String idemNamespace = "agent-stream";
+        String requestFingerprint = idempotencyService.fingerprint(idemNamespace, request);
         Optional<AgentStreamResult> idemCached = idempotencyService.resolve(
-                request.userId(), request.idempotencyKey(), AgentStreamResult.class);
+                idemNamespace, request.userId(), request.idempotencyKey(), AgentStreamResult.class,
+                requestFingerprint);
         if (idemCached.isPresent()) {
             AgentStreamResult cached = idemCached.get();
             if (cached.getContent() != null && !cached.getContent().isEmpty()) {
@@ -240,6 +265,31 @@ public class AgentServiceImpl implements AgentService {
             log.info("[Idempotency] streamAgent replay cached key={}", request.idempotencyKey());
             return cached;
         }
+
+        IdempotentRequestCache.IdempotencyLease idemLease = idempotencyService.acquire(
+                idemNamespace, request.userId(), request.idempotencyKey(), requestFingerprint, 300);
+        if (!idemLease.acquired() && idemLease.enabled()) {
+            Optional<AgentStreamResult> waited = idempotencyService.resolve(
+                    idemNamespace, request.userId(), request.idempotencyKey(), AgentStreamResult.class,
+                    requestFingerprint);
+            if (waited.isPresent()) {
+                AgentStreamResult cached = waited.get();
+                if (cached.getContent() != null && !cached.getContent().isEmpty()) {
+                    onToken.accept(cached.getContent());
+                }
+                if (cached.getCards() != null && !cached.getCards().isEmpty()) {
+                    try {
+                        onCard.accept(objectMapper.writeValueAsString(cached.getCards()));
+                    } catch (Exception e) {
+                        log.warn("[StreamAgent] replay card failed: {}", e.getMessage());
+                    }
+                }
+                return cached;
+            }
+            throw new BusinessException("幂等处理超时，请稍后重试");
+        }
+
+        try {
 
         // prototype scope：每次调用获取一个全新实例，线程安全，无 request 上下文依赖
         ToolResultCollector toolResultCollector = toolResultCollectorProvider.getObject();
@@ -272,7 +322,7 @@ public class AgentServiceImpl implements AgentService {
             String encoded = replyService.encode(clarifyReply);
             Message assistantMessage = conversationService.saveMessage(
                     conversation.getId(), "assistant", encoded);
-            return AgentStreamResult.builder()
+            AgentStreamResult clarificationResult = AgentStreamResult.builder()
                     .conversationId(conversation.getId())
                     .messageId(assistantMessage.getId())
                     .content(clarifyText)
@@ -283,6 +333,8 @@ public class AgentServiceImpl implements AgentService {
                     .totalTokens(0)
                     .degraded(false)
                     .build();
+            idempotencyService.remember(idemLease, requestFingerprint, clarificationResult);
+            return clarificationResult;
         }
 
         String systemPrompt = promptService.buildSystemPrompt(primaryIntent, Map.of(
@@ -364,9 +416,12 @@ public class AgentServiceImpl implements AgentService {
                 .degraded(false)
                 .build();
 
-        // 幂等记录：缓存首次流式结果（含完整文本 + 卡片），重试时重放
-        idempotencyService.remember(request.userId(), request.idempotencyKey(), result);
+        idempotencyService.remember(idemLease, requestFingerprint, result);
         return result;
+        } catch (Exception e) {
+            idempotencyService.release(idemLease);
+            throw e;
+        }
     }
 
     // ==================== 私有方法 ====================

@@ -47,6 +47,14 @@ public class Result<T> implements Serializable {
         return new Result<>(code, message, null, System.currentTimeMillis());
     }
 
+    public static <T> Result<T> accepted(String message) {
+        return new Result<>(202, message, null, System.currentTimeMillis());
+    }
+
+    public static <T> Result<T> error(String message) {
+        return fail(message);
+    }
+
     public boolean isSuccess() {
         return code == SUCCESS_CODE;
     }

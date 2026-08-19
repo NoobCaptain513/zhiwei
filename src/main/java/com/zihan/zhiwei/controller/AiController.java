@@ -7,14 +7,19 @@ import com.zihan.zhiwei.pojo.dto.AgentRequest;
 import com.zihan.zhiwei.pojo.dto.AgentResponse;
 import com.zihan.zhiwei.pojo.dto.ChatRequest;
 import com.zihan.zhiwei.pojo.dto.ChatResponse;
+import com.zihan.zhiwei.pojo.dto.IdempotencyPendingResponse;
 import com.zihan.zhiwei.pojo.dto.UsageRecentItem;
 import com.zihan.zhiwei.service.AgentService;
+import com.zihan.zhiwei.service.IdempotentRequestCache;
 import com.zihan.zhiwei.service.ChatService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -28,6 +33,7 @@ public class AiController {
 
     private final ChatService chatService;
     private final AgentService agentService;
+    private final IdempotentRequestCache idempotencyService;
     private final UsageRecorder usageRecorder;
     private final AiStreamAdvice sse;
 
@@ -73,5 +79,54 @@ public class AiController {
                     card  -> sse.sendCard(emitter, card));
             sse.sendDone(emitter, result);
         });
+    }
+    // ==================== D22: 幂等键轮询接口 ====================
+
+    @GetMapping("/chat/status/{userKey}")
+    @Operation(summary = "轮询聊天结果（幂等键）")
+    public ResponseEntity<Result<?>> chatStatus(@PathVariable String userKey) {
+        String[] parts = userKey.split(":", 2);
+        if (parts.length != 2) {
+            return ResponseEntity.badRequest()
+                    .body(Result.error("Invalid userKey format, expect userId:idempotencyKey"));
+        }
+        var status = idempotencyService.peek("chat", parts[0], parts[1], ChatResponse.class, null);
+        if (status.isCompleted()) {
+            return ResponseEntity.ok(Result.ok(status.result()));
+        } else if (status.isProcessing()) {
+            String location = "/api/ai/chat/status/" + userKey;
+            return ResponseEntity.status(HttpStatus.ACCEPTED)
+                    .header(HttpHeaders.LOCATION, location)
+                    .header(HttpHeaders.RETRY_AFTER, "2")
+                    .body(Result.ok(IdempotencyPendingResponse.of(
+                            parts[0], parts[1], "/api/ai/chat")));
+        } else {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(Result.error("未找到对应的请求"));
+        }
+    }
+
+    @GetMapping("/agent/status/{userKey}")
+    @Operation(summary = "轮询 Agent 结果（幂等键）")
+    public ResponseEntity<Result<?>> agentStatus(@PathVariable String userKey) {
+        String[] parts = userKey.split(":", 2);
+        if (parts.length != 2) {
+            return ResponseEntity.badRequest()
+                    .body(Result.error("Invalid userKey format, expect userId:idempotencyKey"));
+        }
+        var status = idempotencyService.peek("agent", parts[0], parts[1], AgentResponse.class, null);
+        if (status.isCompleted()) {
+            return ResponseEntity.ok(Result.ok(status.result()));
+        } else if (status.isProcessing()) {
+            String location = "/api/ai/agent/status/" + userKey;
+            return ResponseEntity.status(HttpStatus.ACCEPTED)
+                    .header(HttpHeaders.LOCATION, location)
+                    .header(HttpHeaders.RETRY_AFTER, "2")
+                    .body(Result.ok(IdempotencyPendingResponse.of(
+                            parts[0], parts[1], "/api/ai/agent")));
+        } else {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(Result.error("未找到对应的请求"));
+        }
     }
 }

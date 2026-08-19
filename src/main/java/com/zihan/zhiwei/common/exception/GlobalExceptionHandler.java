@@ -31,6 +31,19 @@ import java.util.stream.Collectors;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
+    @ExceptionHandler(IdempotencyConflictException.class)
+    public Result<Void> handleIdempotencyConflict(IdempotencyConflictException ex,
+                                                   HttpServletRequest request,
+                                                   HttpServletResponse response) throws IOException {
+        log.warn("幂等键冲突: uri={}, message={}", request.getRequestURI(), ex.getMessage());
+        if (isSseRequest(response)) {
+            writeSseError(response, ex.getMessage());
+            return null;
+        }
+        response.setStatus(HttpStatus.CONFLICT.value());
+        return Result.fail(ex.getCode(), ex.getMessage());
+    }
+
     @ExceptionHandler(BusinessException.class)
     @ResponseStatus(HttpStatus.OK)
     public Result<Void> handleBusinessException(BusinessException ex, HttpServletRequest request,
