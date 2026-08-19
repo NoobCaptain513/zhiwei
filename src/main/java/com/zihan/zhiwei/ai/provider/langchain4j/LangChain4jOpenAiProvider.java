@@ -4,12 +4,18 @@ import com.zihan.zhiwei.ai.provider.ModelProvider;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatMessage;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatRequest;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatResponse;
+import com.zihan.zhiwei.ai.provider.dto.ToolCall;
+import com.zihan.zhiwei.ai.provider.dto.ToolDefinition;
 import com.zihan.zhiwei.ai.stream.StreamResult;
 import com.zihan.zhiwei.common.exception.BusinessException;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.agent.tool.ToolExecutionRequest;
+import dev.langchain4j.data.message.ToolExecutionResultMessage;
+import dev.langchain4j.agent.tool.ToolSpecification;
+import dev.langchain4j.agent.tool.ToolParameters;
 import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.model.chat.StreamingChatLanguageModel;
 import dev.langchain4j.model.output.Response;
@@ -21,6 +27,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
@@ -50,10 +57,18 @@ public class LangChain4jOpenAiProvider implements ModelProvider {
     @Override
     public ProviderChatResponse chat(ProviderChatRequest request) {
         List<ChatMessage> messages = buildLcMessages(request);
-        Response<AiMessage> response = chatLanguageModel.generate(messages);
+        List<ToolSpecification> tools = buildToolSpecifications(request.tools());
+        Response<AiMessage> response = tools.isEmpty()
+                ? chatLanguageModel.generate(messages)
+                : chatLanguageModel.generate(messages, tools);
 
-        if (response == null || response.content() == null || response.content().text() == null
-                || response.content().text().isBlank()) {
+        List<ToolCall> toolCalls = response != null && response.content() != null
+                ? response.content().toolExecutionRequests().stream()
+                .map(call -> new ToolCall(call.id(), call.name(), call.arguments())).toList()
+                : List.of();
+        if (response == null || response.content() == null
+                || ((response.content().text() == null || response.content().text().isBlank())
+                && toolCalls.isEmpty())) {
             throw new BusinessException("LangChain4j 返回内容为空");
         }
 
@@ -65,7 +80,7 @@ public class LangChain4jOpenAiProvider implements ModelProvider {
                 ? usage.totalTokenCount() : promptTokens + completionTokens;
 
         return new ProviderChatResponse(response.content().text(),
-                model, PROVIDER_NAME, promptTokens, completionTokens, totalTokens);
+                model, PROVIDER_NAME, promptTokens, completionTokens, totalTokens, toolCalls);
     }
 
     /**
@@ -81,7 +96,8 @@ public class LangChain4jOpenAiProvider implements ModelProvider {
         CompletableFuture<Response<AiMessage>> future = new CompletableFuture<>();
 
         try {
-            streamingChatLanguageModel.generate(messages, new dev.langchain4j.model.StreamingResponseHandler<AiMessage>() {
+            List<ToolSpecification> tools = buildToolSpecifications(request.tools());
+            dev.langchain4j.model.StreamingResponseHandler<AiMessage> handler = new dev.langchain4j.model.StreamingResponseHandler<AiMessage>() {
                 @Override
                 public void onNext(String token) {
                     // 实时回调每个 token
@@ -100,7 +116,9 @@ public class LangChain4jOpenAiProvider implements ModelProvider {
                 public void onError(Throwable error) {
                     future.completeExceptionally(error);
                 }
-            });
+            };
+            if (tools.isEmpty()) streamingChatLanguageModel.generate(messages, handler);
+            else streamingChatLanguageModel.generate(messages, tools, handler);
 
             // 阻塞等待流式完成
             Response<AiMessage> response = future.join();
@@ -112,7 +130,12 @@ public class LangChain4jOpenAiProvider implements ModelProvider {
                 completionTokens.set(usage.outputTokenCount() != null ? usage.outputTokenCount() : 0);
             }
 
-            return StreamResult.of(model, PROVIDER_NAME, promptTokens.get(), completionTokens.get());
+            List<ToolCall> toolCalls = response != null && response.content() != null
+                    ? response.content().toolExecutionRequests().stream()
+                    .map(call -> new ToolCall(call.id(), call.name(), call.arguments())).toList()
+                    : List.of();
+            return new StreamResult(model, PROVIDER_NAME, promptTokens.get(), completionTokens.get(),
+                    promptTokens.get() + completionTokens.get(), toolCalls);
 
         } catch (Exception e) {
             throw new BusinessException("LangChain4j Stream 调用失败: " + e.getMessage());
@@ -128,11 +151,39 @@ public class LangChain4jOpenAiProvider implements ModelProvider {
     }
 
     private ChatMessage toLcMessage(ProviderChatMessage message) {
+        if ("tool".equals(message.role())) {
+            return ToolExecutionResultMessage.from(message.toolCallId(), message.toolName(), message.content());
+        }
+        if ("assistant".equals(message.role()) && message.toolCalls() != null
+                && !message.toolCalls().isEmpty()) {
+            List<ToolExecutionRequest> requests = message.toolCalls().stream()
+                    .map(call -> ToolExecutionRequest.builder().id(call.id()).name(call.name())
+                            .arguments(call.arguments()).build()).toList();
+            return AiMessage.from(message.content(), requests);
+        }
         return switch (message.role()) {
             case "system" -> SystemMessage.from(message.content());
             case "assistant" -> AiMessage.from(message.content());
             case "user" -> UserMessage.from(message.content());
             default -> throw new BusinessException("不支持的消息角色: " + message.role());
         };
+    }
+
+    private List<ToolSpecification> buildToolSpecifications(List<ToolDefinition> definitions) {
+        if (definitions == null || definitions.isEmpty()) return List.of();
+        return definitions.stream().map(this::toToolSpecification).toList();
+    }
+
+    @SuppressWarnings("unchecked")
+    private ToolSpecification toToolSpecification(ToolDefinition definition) {
+        Map<String, Map<String, Object>> properties = definition.parameters() == null
+                ? Map.of() : (Map<String, Map<String, Object>>) (Map<?, ?>)
+                definition.parameters().getOrDefault("properties", Map.of());
+        List<String> required = definition.parameters() == null
+                ? List.of() : (List<String>) definition.parameters().getOrDefault("required", List.of());
+        ToolParameters parameters = ToolParameters.builder().type("object")
+                .properties(properties).required(required).build();
+        return ToolSpecification.builder().name(definition.name()).description(definition.description())
+                .parameters(parameters).build();
     }
 }

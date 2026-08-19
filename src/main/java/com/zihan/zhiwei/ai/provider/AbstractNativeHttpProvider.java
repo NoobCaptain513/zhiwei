@@ -7,6 +7,8 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatMessage;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatRequest;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatResponse;
+import com.zihan.zhiwei.ai.provider.dto.ToolCall;
+import com.zihan.zhiwei.ai.provider.dto.ToolDefinition;
 import com.zihan.zhiwei.ai.provider.probe.ProbeResult;
 import com.zihan.zhiwei.ai.stream.StreamResult;
 import com.zihan.zhiwei.common.exception.BusinessException;
@@ -22,6 +24,10 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
@@ -71,7 +77,33 @@ public abstract class AbstractNativeHttpProvider implements ModelProvider {
         for (ProviderChatMessage item : request.messages()) {
             ObjectNode msg = messages.addObject();
             msg.put("role", item.role());
-            msg.put("content", item.content());
+            if (item.content() == null) msg.putNull("content");
+            else msg.put("content", item.content());
+            if (item.toolCallId() != null) msg.put("tool_call_id", item.toolCallId());
+            if (item.toolName() != null) msg.put("name", item.toolName());
+            if (item.toolCalls() != null && !item.toolCalls().isEmpty()) {
+                ArrayNode toolCalls = msg.putArray("tool_calls");
+                for (ToolCall call : item.toolCalls()) {
+                    ObjectNode node = toolCalls.addObject();
+                    node.put("id", call.id());
+                    node.put("type", "function");
+                    ObjectNode function = node.putObject("function");
+                    function.put("name", call.name());
+                    function.put("arguments", call.arguments());
+                }
+            }
+        }
+        if (request.tools() != null && !request.tools().isEmpty()) {
+            ArrayNode tools = body.putArray("tools");
+            for (ToolDefinition tool : request.tools()) {
+                ObjectNode function = tools.addObject().put("type", "function").putObject("function");
+                function.put("name", tool.name());
+                function.put("description", tool.description());
+                function.set("parameters", objectMapper.valueToTree(tool.parameters()));
+            }
+            if (request.toolChoice() != null && !request.toolChoice().isBlank()) {
+                body.put("tool_choice", request.toolChoice());
+            }
         }
         return body;
     }
@@ -168,8 +200,10 @@ public abstract class AbstractNativeHttpProvider implements ModelProvider {
              // ===== 步骤5：解析响应 JSON =====
             JsonNode root = objectMapper.readTree(httpResponse.body());
              // ===== 步骤6：提取回复内容 =====
-            String content = root.path("choices").path(0).path("message").path("content").asText(null);
-            if (content == null || content.isBlank()) {
+            JsonNode message = root.path("choices").path(0).path("message");
+            String content = message.path("content").asText(null);
+            List<ToolCall> toolCalls = parseToolCalls(message.path("tool_calls"));
+            if ((content == null || content.isBlank()) && toolCalls.isEmpty()) {
                 throw new BusinessException(name() + " Provider 返回内容为空");
             }
 
@@ -185,7 +219,7 @@ public abstract class AbstractNativeHttpProvider implements ModelProvider {
 
             // ===== 步骤8：构建响应对象 =====
             ProviderChatResponse response = new ProviderChatResponse(
-                    content, model, name(), promptTokens, completionTokens, totalTokens);
+                    content, model, name(), promptTokens, completionTokens, totalTokens, toolCalls);
 
             // ===== 步骤9：模板方法钩子（关键！） =====
             afterSyncResponse(response); // 钩子：如成本校准
@@ -205,6 +239,7 @@ public abstract class AbstractNativeHttpProvider implements ModelProvider {
         String model = request.model() != null ? request.model() : getDefaultModel();
         AtomicInteger promptTokens = new AtomicInteger();
         AtomicInteger completionTokens = new AtomicInteger();
+        Map<Integer, ToolCallAccumulator> toolCallParts = new LinkedHashMap<>();
 
         try {
             ObjectNode body = buildRequestBody(request, model, true);
@@ -256,6 +291,7 @@ public abstract class AbstractNativeHttpProvider implements ModelProvider {
                         if (content != null && !content.isEmpty()) {
                             onToken.accept(content);
                         }
+                        collectToolCallDeltas(delta.path("tool_calls"), toolCallParts);
                     }
 
                     JsonNode usage = chunk.path("usage");
@@ -268,13 +304,54 @@ public abstract class AbstractNativeHttpProvider implements ModelProvider {
 
             int pt = promptTokens.get();
             int ct = completionTokens.get();
+            List<ToolCall> toolCalls = toolCallParts.values().stream()
+                    .map(ToolCallAccumulator::toToolCall).toList();
             log.debug("[{}Stream] done model={} promptTokens={} completionTokens={}", name(), model, pt, ct);
-            return StreamResult.of(model, name(), pt, ct);
+            return new StreamResult(model, name(), pt, ct, pt + ct, toolCalls);
 
         } catch (BusinessException ex) {
             throw ex;
         } catch (Exception ex) {
             throw new BusinessException(name() + " Stream 调用异常: " + ex.getMessage());
+        }
+    }
+
+    private List<ToolCall> parseToolCalls(JsonNode node) {
+        if (!node.isArray()) return List.of();
+        List<ToolCall> calls = new ArrayList<>();
+        for (JsonNode item : node) {
+            JsonNode function = item.path("function");
+            String name = function.path("name").asText(null);
+            if (name != null && !name.isBlank()) {
+                calls.add(new ToolCall(item.path("id").asText(null), name,
+                        function.path("arguments").asText("{}")));
+            }
+        }
+        return calls;
+    }
+
+    private void collectToolCallDeltas(JsonNode node, Map<Integer, ToolCallAccumulator> parts) {
+        if (!node.isArray()) return;
+        for (JsonNode item : node) {
+            int index = item.path("index").asInt(0);
+            ToolCallAccumulator part = parts.computeIfAbsent(index, ignored -> new ToolCallAccumulator());
+            String id = item.path("id").asText(null);
+            if (id != null && !id.isBlank()) part.id = id;
+            JsonNode function = item.path("function");
+            String name = function.path("name").asText(null);
+            if (name != null && !name.isBlank()) part.name = name;
+            String arguments = function.path("arguments").asText(null);
+            if (arguments != null) part.arguments.append(arguments);
+        }
+    }
+
+    private static final class ToolCallAccumulator {
+        private String id;
+        private String name;
+        private final StringBuilder arguments = new StringBuilder();
+
+        private ToolCall toToolCall() {
+            return new ToolCall(id, name, arguments.isEmpty() ? "{}" : arguments.toString());
         }
     }
 }

@@ -8,6 +8,8 @@ import com.zihan.zhiwei.ai.provider.ModelProviderRouter;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatMessage;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatRequest;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatResponse;
+import com.zihan.zhiwei.ai.provider.dto.ToolCall;
+import com.zihan.zhiwei.ai.provider.dto.ToolDefinition;
 import com.zihan.zhiwei.ai.provider.failover.FailoverResult;
 import com.zihan.zhiwei.ai.rag.RagContextBuilder;
 import com.zihan.zhiwei.ai.rag.RagMessageAugmentor;
@@ -40,6 +42,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.HashMap;
 import java.util.Optional;
 import java.util.function.Consumer;
 
@@ -53,6 +56,8 @@ import java.util.function.Consumer;
 @RequiredArgsConstructor
 public class AgentServiceImpl implements AgentService {
 
+    private static final int MAX_TOOL_ROUNDS = 4;
+
     private final ConversationService conversationService;
     private final ModelProviderRouter modelProviderRouter;
     private final UsageRecorder usageRecorder;
@@ -62,7 +67,7 @@ public class AgentServiceImpl implements AgentService {
     private final RagContextBuilder ragContextBuilder;
     /**
      * P1-6 修复：改为可选注入，Mock 服务未启用时（zhiwei.ai.tool.mock-enabled != true）
-     * 不会影响应用启动，simulateToolCalls 中做 null 检查。
+     * 不会影响应用启动；工具调用循环会处理工具服务未启用的情况。
      */
     @Autowired(required = false)
     private OpsAgentToolService opsAgentToolService;
@@ -163,19 +168,23 @@ public class AgentServiceImpl implements AgentService {
                         .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
         ));
 
-        List<ToolCallResult> toolCalls = simulateToolCalls(primaryIntent, request.message());
-        if (!toolCalls.isEmpty()) {
-            toolResultCollector.addAll(toolCalls);
-        }
-
         List<ProviderChatMessage> providerMessages = buildMessages(
-                systemPrompt, history, toolResultCollector.toContextBlock(), request.message(), request.preferredProvider());
+                systemPrompt, history, "", request.message(), request.preferredProvider());
 
         long agentStart = System.currentTimeMillis();
-        FailoverResult failoverResult;
+        FailoverResult failoverResult = null;
+        ProviderChatResponse providerResponse = null;
         try {
-            failoverResult = modelProviderRouter.executeWithFailover(
-                    new ProviderChatRequest(request.model(), providerMessages));
+            List<ToolDefinition> tools = toolDefinitions(request.chatOnly());
+            for (int round = 0; round < MAX_TOOL_ROUNDS; round++) {
+                failoverResult = modelProviderRouter.executeWithFailover(
+                        new ProviderChatRequest(request.model(), providerMessages, tools,
+                                tools.isEmpty() ? null : "auto"));
+                providerResponse = failoverResult.response();
+                if (!providerResponse.hasToolCalls()) break;
+                executeToolCalls(providerMessages, providerResponse, toolResultCollector);
+                if (round == MAX_TOOL_ROUNDS - 1) throw new BusinessException("工具调用超过最大轮数");
+            }
         } catch (RuntimeException e) {
             // 全部 Provider 失败：补记一条 FAILED 用量，保证用量表能追溯彻底失败的请求；不吞异常
             usageRecorder.recordFailure(conversation.getId(),
@@ -183,7 +192,6 @@ public class AgentServiceImpl implements AgentService {
                     "agent", System.currentTimeMillis() - agentStart, e.getMessage());
             throw e;
         }
-        var providerResponse = failoverResult.response();
         String modelText = providerResponse.content();
 
         AgentReply reply;
@@ -343,25 +351,34 @@ public class AgentServiceImpl implements AgentService {
                         .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
         ));
 
-        List<ToolCallResult> toolCalls = simulateToolCalls(primaryIntent, request.message());
-        if (!toolCalls.isEmpty()) {
-            toolResultCollector.addAll(toolCalls);
-        }
-
         List<ProviderChatMessage> providerMessages = buildMessages(
-                systemPrompt, history, toolResultCollector.toContextBlock(), request.message(), request.preferredProvider());
+                systemPrompt, history, "", request.message(), request.preferredProvider());
 
         StringBuilder fullContent = new StringBuilder();
-        Consumer<String> trackingOnToken = token -> {
-            fullContent.append(token);
-            onToken.accept(token);
-        };
-
-        ProviderChatRequest providerRequest = new ProviderChatRequest(request.model(), providerMessages);
         long agentStreamStart = System.currentTimeMillis();
-        StreamResult streamResult;
+        StreamResult streamResult = null;
+        ProviderChatResponse providerResponse = null;
         try {
-            streamResult = modelProviderRouter.streamChatWithFailover(providerRequest, trackingOnToken);
+            List<ToolDefinition> tools = toolDefinitions(request.chatOnly());
+            for (int round = 0; round < MAX_TOOL_ROUNDS; round++) {
+                StringBuilder roundContent = new StringBuilder();
+                streamResult = modelProviderRouter.streamChatWithFailover(
+                        new ProviderChatRequest(request.model(), providerMessages, tools,
+                                tools.isEmpty() ? null : "auto"), roundContent::append);
+                if (streamResult.toolCalls() == null || streamResult.toolCalls().isEmpty()) {
+                    fullContent.append(roundContent);
+                    if (!roundContent.isEmpty()) onToken.accept(roundContent.toString());
+                    providerResponse = new ProviderChatResponse(fullContent.toString(), streamResult.model(),
+                            streamResult.provider(), streamResult.promptTokens(), streamResult.completionTokens(),
+                            streamResult.totalTokens());
+                    break;
+                }
+                providerResponse = new ProviderChatResponse(roundContent.toString(), streamResult.model(),
+                        streamResult.provider(), streamResult.promptTokens(), streamResult.completionTokens(),
+                        streamResult.totalTokens(), streamResult.toolCalls());
+                executeToolCalls(providerMessages, providerResponse, toolResultCollector);
+                if (round == MAX_TOOL_ROUNDS - 1) throw new BusinessException("工具调用超过最大轮数");
+            }
         } catch (RuntimeException e) {
             // 全部 Provider 失败：补记一条 FAILED 用量；不吞异常
             usageRecorder.recordFailure(conversation.getId(),
@@ -390,10 +407,6 @@ public class AgentServiceImpl implements AgentService {
         }
 
         String encodedContent = replyService.encode(reply);
-
-        ProviderChatResponse providerResponse = new ProviderChatResponse(
-                modelText, streamResult.model(), streamResult.provider(),
-                streamResult.promptTokens(), streamResult.completionTokens(), streamResult.totalTokens());
 
         // P2-12 修复：将助手消息保存 + usage 记录抽为事务原子方法
         Message assistantMessage = saveStreamCompletion(
@@ -431,6 +444,44 @@ public class AgentServiceImpl implements AgentService {
         return preferred != null && !preferred.isBlank() ? preferred : "none";
     }
 
+    private List<ToolDefinition> toolDefinitions(boolean chatOnly) {
+        if (chatOnly || opsAgentToolService == null) return List.of();
+        List<Map<String, Object>> definitions = opsAgentToolService.toolDefinitions();
+        if (definitions == null || definitions.isEmpty()) return List.of();
+        return definitions.stream().map(definition -> new ToolDefinition(
+                (String) definition.get("name"),
+                (String) definition.get("description"),
+                castMap(definition.get("parameters")))).toList();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> castMap(Object value) {
+        return value instanceof Map<?, ?> map
+                ? (Map<String, Object>) (Map<?, ?>) map : Map.of();
+    }
+
+    private void executeToolCalls(List<ProviderChatMessage> messages,
+                                  ProviderChatResponse response,
+                                  ToolResultCollector collector) {
+        messages.add(ProviderChatMessage.assistantToolCalls(response.content(), response.toolCalls()));
+        for (ToolCall call : response.toolCalls()) {
+            if (opsAgentToolService == null) {
+                messages.add(ProviderChatMessage.toolResult(call.id(), call.name(), "工具服务未启用，无法执行该工具"));
+                continue;
+            }
+            Map<String, Object> arguments;
+            try {
+                arguments = objectMapper.readValue(call.arguments(), Map.class);
+            } catch (Exception e) {
+                arguments = new HashMap<>();
+            }
+            ToolCallResult result = opsAgentToolService.execute(call.name(), arguments);
+            collector.add(result);
+            String text = result.isSuccess() ? result.getData() : "工具执行失败: " + result.getError();
+            messages.add(ProviderChatMessage.toolResult(call.id(), call.name(), text));
+        }
+    }
+
     /**
      * P2-12 修复：流式完成后，在事务中原子地保存助手消息 + 记录 usage。
      * 不与长时间的 SSE 流转共享事务，避免长事务锁表。
@@ -444,37 +495,6 @@ public class AgentServiceImpl implements AgentService {
         usageRecorder.record(conversationId, assistantMessage.getId(),
                 providerResponse, "agent", latencyMs, degraded);
         return assistantMessage;
-    }
-
-    private List<ToolCallResult> simulateToolCalls(String intent, String message) {
-        // P1-6 修复：Mock 工具服务未注入时直接返回空列表
-        if (opsAgentToolService == null) {
-            return List.of();
-        }
-        List<ToolCallResult> results = new ArrayList<>();
-        switch (intent) {
-            case AgentIntent.FAULT -> {
-                results.add(opsAgentToolService.execute("queryServerStatus",
-                        Map.of("hostname", extractHostname(message))));
-                results.add(opsAgentToolService.execute("queryMetrics",
-                        Map.of("service", extractHostname(message), "metric", "error_rate", "duration", "5m")));
-            }
-            case AgentIntent.LOG -> {
-                results.add(opsAgentToolService.execute("searchLogs",
-                        Map.of("service", extractService(message), "keyword", "ERROR", "minutes", 30)));
-            }
-            case AgentIntent.DEPLOY -> {
-                results.add(opsAgentToolService.execute("queryDeployHistory",
-                        Map.of("service", extractService(message))));
-            }
-            case AgentIntent.TICKET -> {
-                results.add(opsAgentToolService.execute("createTicket",
-                        Map.of("title", "Agent 自动创建: " + message,
-                                "description", message, "priority", "P2")));
-            }
-            default -> { /* RAG */ }
-        }
-        return results;
     }
 
     private List<ProviderChatMessage> buildMessages(
@@ -495,14 +515,4 @@ public class AgentServiceImpl implements AgentService {
         return messages;
     }
 
-    private String extractHostname(String message) {
-        java.util.regex.Matcher m = java.util.regex.Pattern
-                .compile("(\\d+\\.\\d+\\.\\d+\\.\\d+|[a-zA-Z][a-zA-Z0-9-]*\\.[a-zA-Z0-9-.]+|[a-zA-Z][a-zA-Z0-9-]{2,})")
-                .matcher(message);
-        return m.find() ? m.group(1) : "web-server-01";
-    }
-
-    private String extractService(String message) {
-        return extractHostname(message);
-    }
 }

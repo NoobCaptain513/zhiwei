@@ -1,5 +1,6 @@
 package com.zihan.zhiwei.ai.provider;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.alibaba.dashscope.aigc.generation.Generation;
 import com.alibaba.dashscope.aigc.generation.GenerationParam;
 import com.alibaba.dashscope.aigc.generation.GenerationResult;
@@ -11,6 +12,8 @@ import com.alibaba.dashscope.utils.Constants;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatRequest;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatResponse;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatMessage;
+import com.zihan.zhiwei.ai.provider.dto.ToolCall;
+import com.zihan.zhiwei.ai.provider.dto.ToolDefinition;
 import com.zihan.zhiwei.ai.stream.StreamResult;
 import com.zihan.zhiwei.common.exception.BusinessException;
 import io.reactivex.Flowable;
@@ -18,11 +21,15 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.model.tool.ToolCallingChatOptions;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.ToolResponseMessage;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
@@ -38,6 +45,7 @@ public class SpringAiAlibabaProvider implements ModelProvider {
 
     private final ChatModel chatModel;
     private final Generation generation;
+    private final ObjectMapper objectMapper;
 
     @Value("${spring.ai.dashscope.api-key}")
     private String apiKey;
@@ -45,9 +53,10 @@ public class SpringAiAlibabaProvider implements ModelProvider {
     @Value("${spring.ai.dashscope.chat.options.model:qwen-plus}")
     private String defaultModel;
 
-    public SpringAiAlibabaProvider(ChatModel chatModel) {
+    public SpringAiAlibabaProvider(ChatModel chatModel, ObjectMapper objectMapper) {
         this.chatModel = chatModel;
         this.generation = new Generation();
+        this.objectMapper = objectMapper;
     }
 
     @Override
@@ -59,10 +68,13 @@ public class SpringAiAlibabaProvider implements ModelProvider {
     public ProviderChatResponse chat(ProviderChatRequest request) {
         List<org.springframework.ai.chat.messages.Message> messages = buildSpringMessages(request);
         String model = request.model() != null ? request.model() : defaultModel;
-        ChatResponse response = chatModel.call(new Prompt(messages));
+        ChatResponse response = chatModel.call(new Prompt(messages, buildToolOptions(request, model)));
 
-        String content = response.getResult().getOutput().getText();
-        if (content == null || content.isBlank()) {
+        AssistantMessage output = response.getResult().getOutput();
+        String content = output.getText();
+        List<ToolCall> toolCalls = output.getToolCalls().stream()
+                .map(call -> new ToolCall(call.id(), call.name(), call.arguments())).toList();
+        if ((content == null || content.isBlank()) && toolCalls.isEmpty()) {
             throw new BusinessException("AI 返回内容为空");
         }
 
@@ -72,7 +84,7 @@ public class SpringAiAlibabaProvider implements ModelProvider {
         int totalTokens = usage != null ? (int) usage.getTotalTokens() : promptTokens + completionTokens;
 
         return new ProviderChatResponse(content, model, PROVIDER_NAME,
-                promptTokens, completionTokens, totalTokens);
+                promptTokens, completionTokens, totalTokens, toolCalls);
     }
 
     /**
@@ -80,6 +92,13 @@ public class SpringAiAlibabaProvider implements ModelProvider {
      */
     @Override
     public StreamResult streamChat(ProviderChatRequest request, Consumer<String> onToken) {
+        if ((request.tools() != null && !request.tools().isEmpty())
+                || request.messages().stream().anyMatch(message -> "tool".equals(message.role()))) {
+            ProviderChatResponse response = chat(request);
+            if (response.content() != null && !response.content().isEmpty()) onToken.accept(response.content());
+            return new StreamResult(response.model(), response.provider(), response.promptTokens(),
+                    response.completionTokens(), response.totalTokens(), response.toolCalls());
+        }
         String model = request.model() != null ? request.model() : defaultModel;
         List<Message> messages = buildDashScopeMessages(request);
 
@@ -139,12 +158,46 @@ public class SpringAiAlibabaProvider implements ModelProvider {
     }
 
     private org.springframework.ai.chat.messages.Message toSpringMessage(ProviderChatMessage message) {
+        if ("tool".equals(message.role())) {
+            return new ToolResponseMessage(List.of(new ToolResponseMessage.ToolResponse(
+                    message.toolCallId(), message.toolName(), message.content())));
+        }
+        if ("assistant".equals(message.role()) && message.toolCalls() != null
+                && !message.toolCalls().isEmpty()) {
+            List<AssistantMessage.ToolCall> calls = message.toolCalls().stream()
+                    .map(call -> new AssistantMessage.ToolCall(call.id(), "function", call.name(), call.arguments()))
+                    .toList();
+            return new AssistantMessage(message.content(), Map.of(), calls);
+        }
         return switch (message.role()) {
             case "system" -> new org.springframework.ai.chat.messages.SystemMessage(message.content());
             case "assistant" -> new org.springframework.ai.chat.messages.AssistantMessage(message.content());
             case "user" -> new org.springframework.ai.chat.messages.UserMessage(message.content());
             default -> throw new BusinessException("不支持的消息角色: " + message.role());
         };
+    }
+
+    private ToolCallingChatOptions buildToolOptions(ProviderChatRequest request, String model) {
+        var builder = com.alibaba.cloud.ai.dashscope.chat.DashScopeChatOptions.builder()
+                .withModel(model)
+                .withInternalToolExecutionEnabled(false);
+        if (request.tools() != null && !request.tools().isEmpty()) {
+            List<org.springframework.ai.tool.ToolCallback> callbacks = request.tools().stream()
+                    .map(this::toToolCallback).toList();
+            builder.withToolCallbacks(callbacks);
+        }
+        return builder.build();
+    }
+
+    private org.springframework.ai.tool.ToolCallback toToolCallback(ToolDefinition tool) {
+        try {
+            String schema = objectMapper.writeValueAsString(tool.parameters());
+            return org.springframework.ai.tool.function.FunctionToolCallback.<String, String>
+                    builder(tool.name(), arguments -> arguments)
+                    .description(tool.description()).inputSchema(schema).build();
+        } catch (Exception e) {
+            throw new BusinessException("工具 schema 构建失败: " + tool.name());
+        }
     }
 
     /**
