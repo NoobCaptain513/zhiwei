@@ -60,14 +60,7 @@ public class ModelProviderRouter {
 
     public ModelProvider route(String preferred) {
         List<ModelProvider> ranked = rankCandidates(preferred);
-        return route(ranked);
-    }
-
-    /**
-     * Select the primary provider from an already score-ranked candidate list.
-     */
-    private ModelProvider route(List<ModelProvider> ranked) {
-        if (ranked == null || ranked.isEmpty()) {
+        if (ranked.isEmpty()) {
             throw new BusinessException("没有可用的 Provider");
         }
         return ranked.get(0);
@@ -78,14 +71,8 @@ public class ModelProviderRouter {
     }
 
     public FailoverResult executeWithFailover(String preferred, ProviderChatRequest request) {
-        List<ModelProvider> ranked = rankCandidates(preferred);
-        if (ranked.isEmpty()) {
-            throw new BusinessException("没有可用的 Provider");
-        }
-
-        // Sync and streaming paths share the same score-ranked candidates.
-        ModelProvider primary = route(ranked);
-        FailoverResult result = failoverHandler.execute(primary.name(), request, ranked);
+        String primaryName = preferred != null ? preferred : defaultProvider;
+        FailoverResult result = failoverHandler.execute(primaryName, request);
         if (result.degraded()) {
             log.info("[Router] chat degraded primary={} actual={} events={}",
                     result.primaryProvider(), result.actualProvider(), result.events().size());
@@ -212,10 +199,7 @@ public class ModelProviderRouter {
             latencyScore = Math.max(0.1, 1.0 - ((double) snapshot.avgLatencyMs() / (double) latencyPenaltyMs));
         }
         double costWeight = costCalibrationInterceptor.readWeight(provider.name());
-        // Cost weight is calibrated to [0.1, 10.0]; map it to [0, 1]
-        // before applying the configured cost coefficient.
-        double boundedCostWeight = Math.max(0.1, Math.min(10.0, costWeight));
-        double costScore = 1.0 - (boundedCostWeight - 0.1) / 9.9;
+        double costScore = 1.0 / Math.max(0.1, costWeight);
         double preferBonus = provider.name().equals(preferred) ? 0.15 : 0.0;
         return successScore * 0.45 + latencyScore * 0.25 + costScore * 0.15 + preferBonus;
     }
