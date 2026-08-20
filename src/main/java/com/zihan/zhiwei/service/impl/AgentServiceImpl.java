@@ -174,16 +174,26 @@ public class AgentServiceImpl implements AgentService {
         long agentStart = System.currentTimeMillis();
         FailoverResult failoverResult = null;
         ProviderChatResponse providerResponse = null;
+        int totalPromptTokens = 0;
+        int totalCompletionTokens = 0;
+        int totalTokens = 0;
+        long totalLatencyMs = 0;
+        boolean anyDegraded = false;
         try {
             List<ToolDefinition> tools = toolDefinitions(request.chatOnly());
             for (int round = 0; round < MAX_TOOL_ROUNDS; round++) {
+                List<ToolDefinition> roundTools = round == MAX_TOOL_ROUNDS - 1 ? List.of() : tools;
                 failoverResult = modelProviderRouter.executeWithFailover(
-                        new ProviderChatRequest(request.model(), providerMessages, tools,
-                                tools.isEmpty() ? null : "auto"));
+                        new ProviderChatRequest(request.model(), providerMessages, roundTools,
+                                roundTools.isEmpty() ? "none" : "auto"));
                 providerResponse = failoverResult.response();
+                totalPromptTokens += providerResponse.promptTokens();
+                totalCompletionTokens += providerResponse.completionTokens();
+                totalTokens += providerResponse.totalTokens();
+                totalLatencyMs += failoverResult.latencyMs();
+                anyDegraded |= failoverResult.degraded();
                 if (!providerResponse.hasToolCalls()) break;
                 executeToolCalls(providerMessages, providerResponse, toolResultCollector);
-                if (round == MAX_TOOL_ROUNDS - 1) throw new BusinessException("工具调用超过最大轮数");
             }
         } catch (RuntimeException e) {
             // 全部 Provider 失败：补记一条 FAILED 用量，保证用量表能追溯彻底失败的请求；不吞异常
@@ -192,6 +202,9 @@ public class AgentServiceImpl implements AgentService {
                     "agent", System.currentTimeMillis() - agentStart, e.getMessage());
             throw e;
         }
+        providerResponse = new ProviderChatResponse(providerResponse.content(), providerResponse.model(),
+                providerResponse.provider(), totalPromptTokens, totalCompletionTokens, totalTokens,
+                providerResponse.toolCalls());
         String modelText = providerResponse.content();
 
         AgentReply reply;
@@ -200,7 +213,7 @@ public class AgentServiceImpl implements AgentService {
         if (fallback != null) {
             reply = fallback;
         } else {
-            reply = replyService.buildReply(modelText, primaryIntent, failoverResult.degraded());
+            reply = replyService.buildReply(modelText, primaryIntent, anyDegraded);
         }
 
         String encodedContent = replyService.encode(reply);
@@ -212,13 +225,13 @@ public class AgentServiceImpl implements AgentService {
                 assistantMessage.getId(),
                 providerResponse,
                 "agent",
-                failoverResult.latencyMs(),
-                failoverResult.degraded());
+                totalLatencyMs,
+                anyDegraded);
 
         log.info("[Agent] done intent={} provider={} cards={} degraded={}",
                 primaryIntent, providerResponse.provider(),
                 reply.getCards() == null ? 0 : reply.getCards().size(),
-                failoverResult.degraded());
+                 anyDegraded);
 
         AgentResponse response = AgentResponse.builder()
                 .conversationId(conversation.getId())
@@ -229,7 +242,7 @@ public class AgentServiceImpl implements AgentService {
                 .provider(providerResponse.provider())
                 .model(providerResponse.model())
                 .totalTokens(providerResponse.totalTokens())
-                .degraded(failoverResult.degraded())
+                .degraded(anyDegraded)
                 .build();
 
         idempotencyService.remember(idemLease, requestFingerprint, response);
@@ -358,26 +371,35 @@ public class AgentServiceImpl implements AgentService {
         long agentStreamStart = System.currentTimeMillis();
         StreamResult streamResult = null;
         ProviderChatResponse providerResponse = null;
+        int totalPromptTokens = 0;
+        int totalCompletionTokens = 0;
+        int totalTokens = 0;
+        long totalLatencyMs = 0;
+        boolean anyDegraded = false;
         try {
             List<ToolDefinition> tools = toolDefinitions(request.chatOnly());
             for (int round = 0; round < MAX_TOOL_ROUNDS; round++) {
                 StringBuilder roundContent = new StringBuilder();
+                List<ToolDefinition> roundTools = round == MAX_TOOL_ROUNDS - 1 ? List.of() : tools;
+                long roundStart = System.currentTimeMillis();
                 streamResult = modelProviderRouter.streamChatWithFailover(
-                        new ProviderChatRequest(request.model(), providerMessages, tools,
-                                tools.isEmpty() ? null : "auto"), roundContent::append);
+                        new ProviderChatRequest(request.model(), providerMessages, roundTools,
+                                roundTools.isEmpty() ? "none" : "auto"), roundContent::append);
+                totalLatencyMs += System.currentTimeMillis() - roundStart;
+                totalPromptTokens += streamResult.promptTokens();
+                totalCompletionTokens += streamResult.completionTokens();
+                totalTokens += streamResult.totalTokens();
                 if (streamResult.toolCalls() == null || streamResult.toolCalls().isEmpty()) {
                     fullContent.append(roundContent);
                     if (!roundContent.isEmpty()) onToken.accept(roundContent.toString());
                     providerResponse = new ProviderChatResponse(fullContent.toString(), streamResult.model(),
-                            streamResult.provider(), streamResult.promptTokens(), streamResult.completionTokens(),
-                            streamResult.totalTokens());
+                            streamResult.provider(), totalPromptTokens, totalCompletionTokens, totalTokens);
                     break;
                 }
                 providerResponse = new ProviderChatResponse(roundContent.toString(), streamResult.model(),
                         streamResult.provider(), streamResult.promptTokens(), streamResult.completionTokens(),
                         streamResult.totalTokens(), streamResult.toolCalls());
                 executeToolCalls(providerMessages, providerResponse, toolResultCollector);
-                if (round == MAX_TOOL_ROUNDS - 1) throw new BusinessException("工具调用超过最大轮数");
             }
         } catch (RuntimeException e) {
             // 全部 Provider 失败：补记一条 FAILED 用量；不吞异常
@@ -393,7 +415,7 @@ public class AgentServiceImpl implements AgentService {
         if (fallback != null) {
             reply = fallback;
         } else {
-            reply = replyService.buildReply(modelText, primaryIntent, false);
+            reply = replyService.buildReply(modelText, primaryIntent, anyDegraded);
         }
 
         if (reply.getCards() != null && !reply.getCards().isEmpty()) {
@@ -410,12 +432,12 @@ public class AgentServiceImpl implements AgentService {
 
         // P2-12 修复：将助手消息保存 + usage 记录抽为事务原子方法
         Message assistantMessage = saveStreamCompletion(
-                conversation.getId(), encodedContent, providerResponse, 0L, false);
+                conversation.getId(), encodedContent, providerResponse, totalLatencyMs, anyDegraded);
 
         log.info("[StreamAgent] done intent={} provider={} cards={} tokens={}",
-                primaryIntent, streamResult.provider(),
+                primaryIntent, providerResponse.provider(),
                 reply.getCards() == null ? 0 : reply.getCards().size(),
-                streamResult.totalTokens());
+                providerResponse.totalTokens());
 
         AgentStreamResult result = AgentStreamResult.builder()
                 .conversationId(conversation.getId())
@@ -424,9 +446,9 @@ public class AgentServiceImpl implements AgentService {
                 .cards(reply.getCards())
                 .intent(primaryIntent)
                 .model(streamResult.model())
-                .provider(streamResult.provider())
-                .totalTokens(streamResult.totalTokens())
-                .degraded(false)
+                .provider(providerResponse.provider())
+                .totalTokens(providerResponse.totalTokens())
+                .degraded(anyDegraded)
                 .build();
 
         idempotencyService.remember(idemLease, requestFingerprint, result);
@@ -473,13 +495,16 @@ public class AgentServiceImpl implements AgentService {
             try {
                 arguments = objectMapper.readValue(call.arguments(), Map.class);
             } catch (Exception e) {
-                arguments = new HashMap<>();
+                messages.add(ProviderChatMessage.toolResult(call.id(), call.name(),
+                        "参数解析失败，无法执行工具: " + e.getMessage()));
+                continue;
             }
             ToolCallResult result = opsAgentToolService.execute(call.name(), arguments);
             collector.add(result);
             String text = result.isSuccess() ? result.getData() : "工具执行失败: " + result.getError();
             messages.add(ProviderChatMessage.toolResult(call.id(), call.name(), text));
         }
+
     }
 
     /**

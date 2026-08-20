@@ -28,6 +28,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -94,10 +95,7 @@ public class SpringAiAlibabaProvider implements ModelProvider {
     public StreamResult streamChat(ProviderChatRequest request, Consumer<String> onToken) {
         if ((request.tools() != null && !request.tools().isEmpty())
                 || request.messages().stream().anyMatch(message -> "tool".equals(message.role()))) {
-            ProviderChatResponse response = chat(request);
-            if (response.content() != null && !response.content().isEmpty()) onToken.accept(response.content());
-            return new StreamResult(response.model(), response.provider(), response.promptTokens(),
-                    response.completionTokens(), response.totalTokens(), response.toolCalls());
+            return streamWithTools(request, onToken);
         }
         String model = request.model() != null ? request.model() : defaultModel;
         List<Message> messages = buildDashScopeMessages(request);
@@ -175,6 +173,57 @@ public class SpringAiAlibabaProvider implements ModelProvider {
             case "user" -> new org.springframework.ai.chat.messages.UserMessage(message.content());
             default -> throw new BusinessException("不支持的消息角色: " + message.role());
         };
+    }
+
+    private StreamResult streamWithTools(ProviderChatRequest request, Consumer<String> onToken) {
+        String model = request.model() != null ? request.model() : defaultModel;
+        StringBuilder fullContent = new StringBuilder();
+        Map<String, ToolCallAccumulator> calls = new LinkedHashMap<>();
+        AtomicInteger promptTokens = new AtomicInteger();
+        AtomicInteger completionTokens = new AtomicInteger();
+
+        try {
+            chatModel.stream(new Prompt(buildSpringMessages(request), buildToolOptions(request, model)))
+                    .doOnNext(response -> {
+                        AssistantMessage output = response.getResult().getOutput();
+                        String content = output.getText();
+                        if (content != null && !content.isEmpty()) {
+                            fullContent.append(content);
+                            onToken.accept(content);
+                        }
+                        for (AssistantMessage.ToolCall call : output.getToolCalls()) {
+                            String key = call.id() == null ? call.name() : call.id();
+                            ToolCallAccumulator accumulator = calls.computeIfAbsent(
+                                    key, ignored -> new ToolCallAccumulator());
+                            if (call.id() != null) accumulator.id = call.id();
+                            if (call.name() != null) accumulator.name = call.name();
+                            if (call.arguments() != null) accumulator.arguments.append(call.arguments());
+                        }
+                        var usage = response.getMetadata().getUsage();
+                        if (usage != null) {
+                            promptTokens.set((int) usage.getPromptTokens());
+                            completionTokens.set((int) usage.getCompletionTokens());
+                        }
+                    })
+                    .blockLast(java.time.Duration.ofSeconds(120));
+        } catch (Exception e) {
+            throw new BusinessException("DashScope Stream 调用失败: " + e.getMessage());
+        }
+
+        List<ToolCall> toolCalls = calls.values().stream()
+                .map(ToolCallAccumulator::toToolCall).toList();
+        return new StreamResult(model, PROVIDER_NAME, promptTokens.get(), completionTokens.get(),
+                promptTokens.get() + completionTokens.get(), toolCalls);
+    }
+
+    private static final class ToolCallAccumulator {
+        private String id;
+        private String name;
+        private final StringBuilder arguments = new StringBuilder();
+
+        private ToolCall toToolCall() {
+            return new ToolCall(id, name, arguments.isEmpty() ? "{}" : arguments.toString());
+        }
     }
 
     private ToolCallingChatOptions buildToolOptions(ProviderChatRequest request, String model) {
