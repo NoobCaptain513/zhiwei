@@ -1,9 +1,16 @@
+FROM eclipse-temurin:21-jdk-alpine AS builder
+WORKDIR /workspace
+COPY .mvn .mvn
+COPY mvnw pom.xml ./
+COPY src src
+RUN chmod +x mvnw && ./mvnw -DskipTests package
+
 FROM eclipse-temurin:21-jre-alpine
 WORKDIR /app
-COPY target/zhiwei-*.jar app.jar
+COPY --from=builder /workspace/target/zhiwei-*.jar app.jar
+ENV SERVER_PORT=8081 \
+    SPRING_PROFILES_ACTIVE=mcp,docker
 EXPOSE 8081
-HEALTHCHECK --interval=10s --timeout=3s --retries=3 \
-  CMD wget -qO- http://localhost:8081/health/ready || exit 1
-ENTRYPOINT ["java", "-jar", "app.jar", \
-  "--spring.profiles.active=mcp", \
-  "--server.port=8081"]
+HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=5 \
+  CMD wget -qO- "http://127.0.0.1:${SERVER_PORT}/actuator/health" || exit 1
+ENTRYPOINT ["java", "-jar", "app.jar"]

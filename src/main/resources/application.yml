@@ -1,23 +1,38 @@
 spring:
-  profiles:
-    active: dev
   application:
     name: zhiwei
   docker:
     compose:
       enabled: false
+  datasource:
+    url: ${MYSQL_URL:jdbc:mysql://localhost:3306/zhiwei?useUnicode=true&characterEncoding=utf-8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai}
+    username: ${MYSQL_USER:zhiwei}
+    password: ${MYSQL_PASSWORD:zhiwei123}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:zhiwei123}
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER:zhiwei}
+    password: ${RABBITMQ_PASSWORD:zhiwei123}
+    listener:
+      simple:
+        default-requeue-rejected: false
+  ai:
+    dashscope:
+      api-key: ${DASHSCOPE_API_KEY}
+      chat:
+        options:
+          model: ${DASHSCOPE_MODEL:qwen-plus}
   flyway:
     enabled: true
     locations: classpath:db/migration
     baseline-on-migrate: true
     repair-on-migrate: true
-    url: jdbc:mysql://192.168.100.142:3306/zhiwei?useUnicode=true&characterEncoding=utf-8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
-    user: root
-    password: 123456
-  rabbitmq:
-    listener:
-      simple:
-        default-requeue-rejected: false
   servlet:
     multipart:
       max-file-size: 100MB
@@ -44,6 +59,19 @@ mybatis-plus:
 
 zhiwei:
   ai:
+    langchain4j:
+      api-key: ${DASHSCOPE_API_KEY}
+    native:
+      api-key: ${DASHSCOPE_API_KEY}
+    embedding:
+      api-key: ${DASHSCOPE_API_KEY}
+    datasource:
+      pgvector:
+        jdbc-url: ${PGVECTOR_URL:jdbc:postgresql://localhost:5432/zhiwei_rag}
+        username: ${POSTGRES_USER:zhiwei}
+        password: ${POSTGRES_PASSWORD:zhiwei123}
+        driver-class-name: org.postgresql.Driver
+        maximum-pool-size: 10
     rag:
       sub-query-timeout-ms: 8000
       rewrite-cache-size: 1000

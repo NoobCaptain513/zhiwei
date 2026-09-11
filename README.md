@@ -247,25 +247,36 @@ com.zhiwei
 ### 启动
 
 ```bash
-# 1. 启动中间件 + 主应用
-docker compose up -d
+# 1. 先配置 API Key
+export DASHSCOPE_API_KEY=你的_DashScope_API_Key
 
-# 2. 启动 MCP Server（独立进程，可选）
-docker compose up -d zhiwei-mcp
+# 2. 构建镜像并启动中间件 + 主应用
+docker compose up -d --build
 
-# 3. 配置 API Key
-export DASHSCOPE_API_KEY=sk-your-key-here
+# 3. 如需独立 MCP Server，再启用 mcp profile
+docker compose --profile mcp up -d --build zhiwei-mcp
 ```
+
+首次启动会自动初始化 MySQL Flyway 表和 PostgreSQL pgvector 表。可通过
+`docker compose ps` 查看各服务状态。
 
 ### 本地开发启动
 
 ```bash
-# 主应用
+# 1. 配置 API Key，并仅启动本地开发所需中间件
+export DASHSCOPE_API_KEY=你的_DashScope_API_Key
+docker compose up -d mysql postgres redis rabbitmq
+
+# 2. 主应用（Windows 使用 mvnw.cmd）
 ./mvnw spring-boot:run
 
-# MCP Server（新终端）
-./mvnw spring-boot:run -Dspring-boot.run.profiles=mcp -Dspring-boot.run.arguments=--server.port=8081
+# 3. MCP Server（新终端，可选）
+./mvnw spring-boot:run -Dspring-boot.run.profiles=mcp -Dspring-boot.run.arguments="--server.port=8081"
 ```
+
+默认配置连接 `localhost` 上由 Compose 启动的中间件；容器内通过已提交的
+`application-docker.yml` 切换为 Compose 服务名。私有的
+`application-dev.yml` 只用于个人覆盖配置，不是启动必需文件。
 
 ### 访问
 

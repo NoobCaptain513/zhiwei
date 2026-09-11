@@ -7,11 +7,5 @@ import java.util.List;
  */
 public record ProviderChatRequest(
         String model,
-        List<ProviderChatMessage> messages,
-        List<ToolDefinition> tools,
-        String toolChoice
-) {
-    public ProviderChatRequest(String model, List<ProviderChatMessage> messages) {
-        this(model, messages, List.of(), null);
-    }
-}
+        List<ProviderChatMessage> messages
+) {}

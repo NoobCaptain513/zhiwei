@@ -43,7 +43,10 @@ services:
       - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./src/main/resources/db/pgvector:/docker-entrypoint-initdb.d
+      # 显式编号，保证干净数据卷先建表、再执行后续迁移。
+      - ./src/main/resources/db/pgvector/schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
+      - ./src/main/resources/db/pgvector/V2__add_ollama_embedding_column.sql:/docker-entrypoint-initdb.d/002_add_ollama_embedding_column.sql:ro
+      - ./src/main/resources/db/pgvector/V3__keyword_search_pg_trgm.sql:/docker-entrypoint-initdb.d/003_keyword_search_pg_trgm.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-zhiwei} -d zhiwei_rag"]
       interval: 10s
@@ -136,7 +139,7 @@ services:
       - "8080:8080"
     environment:
       SPRING_PROFILES_ACTIVE: docker
-      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?请先设置 DASHSCOPE_API_KEY}
       TZ: Asia/Shanghai
     depends_on:
       mysql:
@@ -152,6 +155,8 @@ services:
 
   # -------------------- 智维 MCP Server（独立进程） --------------------
   zhiwei-mcp:
+    profiles:
+      - mcp
     build:
       context: .
       dockerfile: Dockerfile.mcp
@@ -161,7 +166,8 @@ services:
       - "8081:8081"
     environment:
       SPRING_PROFILES_ACTIVE: mcp,docker
-      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?请先设置 DASHSCOPE_API_KEY}
+      SERVER_PORT: 8081
       TZ: Asia/Shanghai
     depends_on:
       mysql:

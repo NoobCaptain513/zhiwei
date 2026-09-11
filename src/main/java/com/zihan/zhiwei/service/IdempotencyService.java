@@ -405,5 +405,4 @@ public class IdempotencyService implements IdempotentRequestCache {
             return List.of(result, lock, fingerprint);
         }
     }
-
 }
