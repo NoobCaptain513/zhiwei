@@ -19,6 +19,7 @@ import com.zihan.zhiwei.pojo.dto.AgentResponse;
 import com.zihan.zhiwei.pojo.entity.Conversation;
 import com.zihan.zhiwei.pojo.entity.Message;
 import com.zihan.zhiwei.service.ConversationService;
+import com.zihan.zhiwei.service.IdempotentRequestCache;
 import com.zihan.zhiwei.service.IdempotencyService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -57,6 +58,7 @@ class AgentServiceImplTest {
     @Mock private SpringAiSafetyAdvisor safetyAdvisor;
     @Mock private IdempotencyService idempotencyService;
     @Mock private ObjectProvider<ToolResultCollector> toolResultCollectorProvider;
+    @Mock private AssistantCompletionService assistantCompletionService;
 
     private ToolResultCollector toolResultCollector = new ToolResultCollector();
     private AgentReplyService replyService;
@@ -68,14 +70,18 @@ class AgentServiceImplTest {
     void setUp() {
         ResultCardAssembler assembler = new ResultCardAssembler(
                 new com.fasterxml.jackson.databind.ObjectMapper());
-        replyService = new AgentReplyService(assembler, toolResultCollector,
-                new com.fasterxml.jackson.databind.ObjectMapper());
+        replyService = new AgentReplyService(
+                assembler, new com.fasterxml.jackson.databind.ObjectMapper());
 
         // 安全校验默认放行
         when(safetyAdvisor.check(anyString(), anyString())).thenReturn(null);
-        // 幂等默认未命中（不传 idempotencyKey 时不走幂等）
-        when(idempotencyService.resolve(anyString(), isNull(), any())).thenReturn(java.util.Optional.empty());
-        when(idempotencyService.resolve(anyString(), anyString(), any())).thenReturn(java.util.Optional.empty());
+        // 幂等默认未命中；空 key 返回 disabled lease。
+        when(idempotencyService.fingerprint(anyString(), any())).thenReturn("fingerprint");
+        when(idempotencyService.resolve(anyString(), anyString(), nullable(String.class), any(), anyString()))
+                .thenReturn(java.util.Optional.empty());
+        when(idempotencyService.acquire(anyString(), anyString(), nullable(String.class), anyString(), anyInt()))
+                .thenAnswer(inv -> IdempotentRequestCache.IdempotencyLease.disabled(
+                        inv.getArgument(0), inv.getArgument(1), inv.getArgument(2)));
         // ObjectProvider 每次返回新实例，模拟真实的 prototype scope（避免状态累积）
         when(toolResultCollectorProvider.getObject()).thenAnswer(inv -> new ToolResultCollector());
 
@@ -84,7 +90,7 @@ class AgentServiceImplTest {
                 intentAnalyzer, promptService,
                 ragMessageAugmentor, ragContextBuilder,
                 toolResultCollectorProvider, fallbackHandler, replyService,
-                clarificationService, safetyAdvisor, idempotencyService,
+                clarificationService, safetyAdvisor, idempotencyService, assistantCompletionService,
                 new com.fasterxml.jackson.databind.ObjectMapper());
 
         // opsAgentToolService 是 @Autowired(required=false) 字段（不在构造器里），反射注入 mock
@@ -130,7 +136,7 @@ class AgentServiceImplTest {
             when(modelProviderRouter.executeWithFailover(any())).thenReturn(
                     new FailoverResult(providerResp, "spring-ai-alibaba", "spring-ai-alibaba", false, 350L, List.of()));
 
-            when(fallbackHandler.fallbackIfNeeded(anyString(), anyString(), anyString())).thenReturn(null);
+            when(fallbackHandler.fallbackIfNeeded(anyString(), anyString(), anyString(), anyList())).thenReturn(null);
             when(conversationService.saveMessage(eq(1L), eq("assistant"), anyString()))
                     .thenAnswer(inv -> {
                         Message msg = new Message();
@@ -148,6 +154,8 @@ class AgentServiceImplTest {
             assertThat(response.getIntent()).isEqualTo(AgentIntent.FAULT);
             assertThat(response.getProvider()).isEqualTo("spring-ai-alibaba");
             assertThat(response.isDegraded()).isFalse();
+            assertThat(response.getCards()).extracting(AgentReply.Card::getType)
+                    .containsExactly("server", "metric");
 
             verify(conversationService).getOrCreate("u1", null);
             verify(intentAnalyzer).analyze("nginx-01 宕机了");
@@ -176,7 +184,7 @@ class AgentServiceImplTest {
                     .data("{\"service\":\"nginx\",\"keyword\":\"ERROR\",\"totalHits\":42}").build();
             when(opsAgentToolService.execute(eq("searchLogs"), anyMap())).thenReturn(logResult);
             when(ragMessageAugmentor.augmentIfEnabled(anyList())).thenAnswer(inv -> inv.getArgument(0));
-            when(fallbackHandler.fallbackIfNeeded(anyString(), anyString(), anyString())).thenReturn(null);
+            when(fallbackHandler.fallbackIfNeeded(anyString(), anyString(), anyString(), anyList())).thenReturn(null);
 
             ProviderChatResponse providerResp = new ProviderChatResponse(
                     "日志中发现 42 条 ERROR 记录...", "qwen-plus", "spring-ai-alibaba", 150, 80, 230);
@@ -252,7 +260,8 @@ class AgentServiceImplTest {
                     .cards(List.of())
                     .intent("fault")
                     .build();
-            when(fallbackHandler.fallbackIfNeeded(anyString(), anyString(), eq(AgentIntent.FAULT)))
+            when(fallbackHandler.fallbackIfNeeded(
+                    anyString(), anyString(), eq(AgentIntent.FAULT), anyList()))
                     .thenReturn(fallbackReply);
 
             AgentResponse response = service.agent(new AgentRequest("u1", null, "Redis 宕机了", null, false, null, null));
@@ -311,7 +320,7 @@ class AgentServiceImplTest {
         // 同时 mock 单参数和双参数版本的 augmentIfEnabled
         when(ragMessageAugmentor.augmentIfEnabled(anyList())).thenAnswer(inv -> inv.getArgument(0));
         when(ragMessageAugmentor.augmentIfEnabled(anyList(), anyString())).thenAnswer(inv -> inv.getArgument(0));
-        when(fallbackHandler.fallbackIfNeeded(anyString(), anyString(), anyString())).thenReturn(null);
+        when(fallbackHandler.fallbackIfNeeded(anyString(), anyString(), anyString(), anyList())).thenReturn(null);
 
         ProviderChatResponse providerResp = new ProviderChatResponse(
                 "模型回复...", "qwen-plus", "spring-ai-alibaba", 100, 50, 150);

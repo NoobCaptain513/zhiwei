@@ -32,15 +32,23 @@ build/
 ### VS Code ###
 .vscode/
 
-### Sensitive ###
-.env
-application-dev.yml
-*.postman_collection.json
+### Zed ###
+.zed/
 
-### Non-code ###
-docs/
-postman/
-scripts/
-ai-refactor-map.md
-mcp-bridge/
-docker-compose.yml
+### Local secrets and overrides ###
+.env
+.env.*
+!.env.example
+/src/main/resources/application-dev.yml
+
+### Runtime output ###
+*.log
+logs/
+*.pid
+hs_err_pid*
+replay_pid*
+
+### OS and accidental files ###
+.DS_Store
+Thumbs.db
+/NUL

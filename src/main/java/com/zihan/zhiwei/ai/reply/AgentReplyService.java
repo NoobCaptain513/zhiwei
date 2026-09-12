@@ -3,7 +3,6 @@ package com.zihan.zhiwei.ai.reply;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zihan.zhiwei.ai.tool.ToolCallResult;
-import com.zihan.zhiwei.ai.tool.ToolResultCollector;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -20,7 +19,6 @@ import java.util.List;
 public class AgentReplyService {
 
     private final ResultCardAssembler resultCardAssembler;
-    private final ToolResultCollector toolResultCollector;
 
     /**
      * P1-5 修复：注入 ObjectMapper 用于 JSON 序列化，
@@ -31,8 +29,8 @@ public class AgentReplyService {
     /**
      * 标准组装（有工具调用时）
      */
-    public AgentReply buildReply(String modelText, String intent, boolean degraded) {
-        List<ToolCallResult> toolResults = toolResultCollector.getAll();
+    public AgentReply buildReply(String modelText, String intent, boolean degraded,
+                                 List<ToolCallResult> toolResults) {
         List<AgentReply.Card> cards = resultCardAssembler.assemble(toolResults);
 
         return AgentReply.builder()
@@ -47,14 +45,16 @@ public class AgentReplyService {
     /**
      * 兜底组装（无工具调用时）
      */
-    public AgentReply buildFallbackReply(String modelText, String intent, List<AgentReply.Card> extraCards) {
-        List<AgentReply.Card> existing = resultCardAssembler.assemble(toolResultCollector.getAll());
+    public AgentReply buildFallbackReply(String modelText, String intent,
+                                         List<AgentReply.Card> extraCards,
+                                         List<ToolCallResult> toolResults) {
+        List<AgentReply.Card> existing = resultCardAssembler.assemble(toolResults);
         List<AgentReply.Card> merged = resultCardAssembler.merge(existing, extraCards);
 
         return AgentReply.builder()
                 .text(modelText)
                 .cards(merged)
-                .toolResults(toolResultCollector.getAll())
+                .toolResults(toolResults)
                 .intent(intent)
                 .build();
     }

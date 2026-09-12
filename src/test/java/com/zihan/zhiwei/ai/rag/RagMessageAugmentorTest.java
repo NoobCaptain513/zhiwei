@@ -44,6 +44,7 @@ class RagMessageAugmentorTest {
     void setUp() {
         augmentor = new RagMessageAugmentor(ragContextBuilder);
         ReflectionTestUtils.setField(augmentor, "injectOnChat", true);
+        ReflectionTestUtils.setField(augmentor, "rewriteHistorySize", 3);
     }
 
     // ──────────────────────────────────────────

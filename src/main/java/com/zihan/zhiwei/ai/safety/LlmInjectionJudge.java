@@ -16,7 +16,7 @@ import java.util.Locale;
  * FIX-12: LLM 注入裁判（纵深防御第 2 层）。
  * 用小模型对灰区文本做语义判定。
  * 裁判自身防注入：待检文本放在 <user_input> 定界标签里。
- * fail-open：裁判故障时放行。
+ * 默认 fail-closed：裁判故障或返回非协议结果时阻断。
  */
 @Slf4j
 @Component
@@ -36,7 +36,7 @@ public class LlmInjectionJudge {
     @Value("${zhiwei.ai.safety.judge.model:qwen-turbo}")
     private String judgeModel;
 
-    @Value("${zhiwei.ai.safety.judge.fail-open:true}")
+    @Value("${zhiwei.ai.safety.judge.fail-open:false}")
     private boolean failOpen;
 
     @Value("${zhiwei.ai.safety.judge.max-chars:1500}")
@@ -61,7 +61,14 @@ public class LlmInjectionJudge {
             ProviderChatResponse response = router.chatWithFailover(request);
             String content = response.content() == null ? ""
                     : response.content().trim().toUpperCase(Locale.ROOT);
-            return content.contains("INJECTION") ? Verdict.INJECTION : Verdict.CLEAN;
+            if ("INJECTION".equals(content)) {
+                return Verdict.INJECTION;
+            }
+            if ("CLEAN".equals(content)) {
+                return Verdict.CLEAN;
+            }
+            log.warn("[Safety] llm judge returned invalid verdict");
+            return failOpen ? Verdict.UNAVAILABLE : Verdict.INJECTION;
         } catch (Exception e) {
             log.warn("[Safety] llm judge unavailable: {}", e.getMessage());
             return failOpen ? Verdict.UNAVAILABLE : Verdict.INJECTION;

@@ -16,11 +16,13 @@ import org.mockito.*;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.amqp.core.Message;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
@@ -140,6 +142,7 @@ class KnowledgePipelineTests {
         @Mock private AiRagService aiRagService;
         @Mock private PgVectorKnowledgeRepository pgVectorKnowledgeRepository;
         @Mock private DocumentEmitterRegistry emitterRegistry;
+        @Mock private RabbitTemplate rabbitTemplate;
 
         private KnowledgePipelineConsumer consumer;
 
@@ -147,7 +150,71 @@ class KnowledgePipelineTests {
         void setUp() {
             consumer = new KnowledgePipelineConsumer(
                     documentMapper, documentParser, smartChunker, aiRagService,
-                    pgVectorKnowledgeRepository, emitterRegistry);
+                    pgVectorKnowledgeRepository, emitterRegistry, rabbitTemplate);
+        }
+
+        @Test
+        @DisplayName("确定性失败 → 原消息进入停车场队列")
+        void shouldPublishFatalFailureToParkingLot() throws Exception {
+            KnowledgeDocument doc = buildDoc(1L, "broken.pdf", "PENDING");
+            KnowledgePipelineMessage message = new KnowledgePipelineMessage(
+                    1L, "u1", "broken.pdf", "broken".getBytes(StandardCharsets.UTF_8));
+            when(documentMapper.selectById(1L)).thenReturn(doc);
+            when(documentParser.parse(any(), eq("broken.pdf")))
+                    .thenReturn(new DocumentParser.ParseResult(
+                            "broken.pdf", " ", "application/pdf", 6));
+
+            consumer.onMessage(message, null);
+
+            verify(rabbitTemplate).convertAndSend(
+                    KnowledgePipelineConfig.DLX_EXCHANGE,
+                    KnowledgePipelineConfig.PARKING_ROUTING,
+                    message);
+            assertThat(doc.getStatus()).isEqualTo("FAILED");
+        }
+
+        @Test
+        @DisplayName("停车场保留原始消息属性并附带失败原因")
+        void shouldPreserveRawMessageWhenParking() throws Exception {
+            KnowledgeDocument doc = buildDoc(1L, "broken.pdf", "PENDING");
+            KnowledgePipelineMessage message = new KnowledgePipelineMessage(
+                    1L, "u1", "broken.pdf", "broken".getBytes(StandardCharsets.UTF_8));
+            org.springframework.amqp.core.MessageProperties properties =
+                    new org.springframework.amqp.core.MessageProperties();
+            properties.setHeader("x-death", List.of(Map.of("count", 3L)));
+            Message raw = new Message("wire-body".getBytes(StandardCharsets.UTF_8), properties);
+            when(documentMapper.selectById(1L)).thenReturn(doc);
+            when(documentParser.parse(any(), eq("broken.pdf")))
+                    .thenReturn(new DocumentParser.ParseResult(
+                            "broken.pdf", " ", "application/pdf", 6));
+
+            consumer.onMessage(message, raw);
+
+            ArgumentCaptor<Message> parked = ArgumentCaptor.forClass(Message.class);
+            verify(rabbitTemplate).send(
+                    eq(KnowledgePipelineConfig.DLX_EXCHANGE),
+                    eq(KnowledgePipelineConfig.PARKING_ROUTING), parked.capture());
+            assertThat(parked.getValue()).isSameAs(raw);
+            assertThat(parked.getValue().getMessageProperties().getHeaders())
+                    .containsKey("x-death")
+                    .containsEntry("x-zhiwei-parking-reason", "文件解析结果为空（文件可能损坏）");
+        }
+
+        @Test
+        @DisplayName("空文件 → 标记失败并进入停车场队列")
+        void shouldPublishEmptyFileToParkingLot() {
+            KnowledgeDocument doc = buildDoc(1L, "empty.pdf", "PENDING");
+            KnowledgePipelineMessage message = new KnowledgePipelineMessage(
+                    1L, "u1", "empty.pdf", new byte[0]);
+            when(documentMapper.selectById(1L)).thenReturn(doc);
+
+            consumer.onMessage(message, null);
+
+            verify(rabbitTemplate).convertAndSend(
+                    KnowledgePipelineConfig.DLX_EXCHANGE,
+                    KnowledgePipelineConfig.PARKING_ROUTING,
+                    message);
+            assertThat(doc.getStatus()).isEqualTo("FAILED");
         }
 
         @Test

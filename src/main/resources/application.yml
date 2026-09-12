@@ -1,13 +1,15 @@
 spring:
   application:
     name: zhiwei
+  profiles:
+    active: dev
   docker:
     compose:
       enabled: false
   datasource:
     url: ${MYSQL_URL:jdbc:mysql://localhost:3306/zhiwei?useUnicode=true&characterEncoding=utf-8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai}
-    username: ${MYSQL_USER:zhiwei}
-    password: ${MYSQL_PASSWORD:zhiwei123}
+    username: ${MYSQL_USER}
+    password: ${MYSQL_PASSWORD}
     driver-class-name: com.mysql.cj.jdbc.Driver
   data:
     redis:
@@ -85,7 +87,7 @@ zhiwei:
       judge:
         enabled: true
         model: qwen-turbo
-        fail-open: true
+        fail-open: false
         max-chars: 1500
     health:
       event-redis-size: 1000
@@ -94,6 +96,8 @@ zhiwei:
       # 幂等键缓存 TTL：客户端重试携带同一 Idempotency-Key 时，命中缓存直接返回首次结果，避免重复扣费
       ttl-hours: 24
   security:
+    api-key-enabled: false
+    api-keys: ${ZHIWEI_API_KEYS:}
     jwt:
       enabled: false
       secret: ${ZHIWEI_JWT_SECRET:changeme1234567890123456789012345}

@@ -71,7 +71,12 @@ public class ModelProviderRouter {
     }
 
     public FailoverResult executeWithFailover(String preferred, ProviderChatRequest request) {
-        String primaryName = preferred != null ? preferred : defaultProvider;
+        String routingPreference = preferred != null ? preferred : defaultProvider;
+        List<ModelProvider> ranked = rankCandidates(routingPreference);
+        if (ranked.isEmpty()) {
+            throw new BusinessException("没有可用的 Provider");
+        }
+        String primaryName = ranked.get(0).name();
         FailoverResult result = failoverHandler.execute(primaryName, request);
         if (result.degraded()) {
             log.info("[Router] chat degraded primary={} actual={} events={}",

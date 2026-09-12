@@ -8,6 +8,8 @@ import com.zihan.zhiwei.ai.provider.nativehttp.CostCalibrationInterceptor;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatMessage;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatRequest;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatResponse;
+import com.zihan.zhiwei.ai.provider.failover.FailoverHandler;
+import com.zihan.zhiwei.ai.provider.failover.FailoverResult;
 import com.zihan.zhiwei.common.exception.BusinessException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -18,6 +20,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -38,6 +41,7 @@ class AiStreamTests {
     @Mock private CostCalibrationInterceptor costCalibrationInterceptor;
     @Mock private com.zihan.zhiwei.ai.provider.probe.ModelProbeService probeService;
     @Mock private com.zihan.zhiwei.ai.provider.health.FailoverEventLog failoverEventLog;
+    @Mock private FailoverHandler failoverHandler;
 
     @BeforeEach
     void setUp() {
@@ -169,6 +173,36 @@ class AiStreamTests {
 
             assertThat(tokens).containsExactly("完整回复");
             assertThat(result.totalTokens()).isEqualTo(80);
+        }
+    }
+
+    // ──────────────────────────────────────────
+    // ModelProviderRouter 同步智能路由
+    // ──────────────────────────────────────────
+
+    @Nested
+    @DisplayName("ModelProviderRouter 同步智能路由")
+    class SyncRoutingTests {
+
+        @Test
+        @DisplayName("同步调用使用指标得分最高的 Provider 作为降级链起点")
+        void shouldUseHighestRankedProviderAsSyncPrimary() {
+            ModelProvider slow = mockProvider("slow", true);
+            ModelProvider fast = mockProvider("fast", true);
+            when(providerMetrics.snapshot("slow"))
+                    .thenReturn(new ProviderMetrics.Snapshot("slow", 10, 10, 0, 1.0, 1900, 40));
+            when(providerMetrics.snapshot("fast"))
+                    .thenReturn(new ProviderMetrics.Snapshot("fast", 10, 10, 0, 1.0, 20, 40));
+            ProviderChatRequest request = new ProviderChatRequest("m", List.of());
+            ProviderChatResponse response = new ProviderChatResponse("ok", "m", "fast", 1, 1, 2);
+            when(failoverHandler.execute(anyString(), same(request)))
+                    .thenReturn(new FailoverResult(response, "fast", "fast", false, 20, List.of()));
+
+            ModelProviderRouter router = buildRouter(List.of(slow, fast));
+            FailoverResult result = router.executeWithFailover(request);
+
+            assertThat(result.actualProvider()).isEqualTo("fast");
+            verify(failoverHandler).execute("fast", request);
         }
     }
 
@@ -326,14 +360,17 @@ class AiStreamTests {
     }
 
     private ModelProviderRouter buildRouter(List<ModelProvider> providers) {
-        return new ModelProviderRouter(
+        ModelProviderRouter router = new ModelProviderRouter(
                 providers,
                 providerMetrics,
-                null,   // FailoverHandler
+                failoverHandler,
                 healthMonitor,
                 costCalibrationInterceptor,
                 probeService,
                 failoverEventLog
         );
+        ReflectionTestUtils.setField(router, "defaultProvider", "slow");
+        ReflectionTestUtils.setField(router, "latencyPenaltyMs", 2000L);
+        return router;
     }
 }

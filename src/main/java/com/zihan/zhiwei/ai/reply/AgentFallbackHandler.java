@@ -4,7 +4,7 @@ import com.zihan.zhiwei.ai.intent.AgentIntent;
 import com.zihan.zhiwei.ai.rag.AiRagService;
 import com.zihan.zhiwei.ai.rag.dto.RagHit;
 import com.zihan.zhiwei.ai.tool.ToolCallResult;
-import com.zihan.zhiwei.ai.tool.ToolResultCollector;
+
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -30,7 +30,6 @@ public class AgentFallbackHandler {
     private final AiRagService aiRagService;
     private final RagCardBuilder ragCardBuilder;
     private final ResultCardAssembler resultCardAssembler;
-    private final ToolResultCollector toolResultCollector;
     private final AgentReplyService replyService;
 
     /**
@@ -40,8 +39,8 @@ public class AgentFallbackHandler {
      * @param intent       识别到的意图
      * @return 兜底后的 AgentReply（若不需要兜底则返回 null，表示模型回复足够）
      */
-    public AgentReply fallbackIfNeeded(String userMessage, String modelText, String intent) {
-        List<ToolCallResult> toolResults = toolResultCollector.getAll();
+    public AgentReply fallbackIfNeeded(String userMessage, String modelText, String intent,
+                                       List<ToolCallResult> toolResults) {
 
         // 有工具调用结果 → 不需要兜底，卡片由 ResultCardAssembler 组装
         if (!toolResults.isEmpty()) {
@@ -73,7 +72,7 @@ public class AgentFallbackHandler {
         if (!ragCards.isEmpty()) {
             fallbackText += "\n\n（已从知识库检索到 " + ragCards.size() + " 条相关结果，请参考下方卡片）";
         }
-        return replyService.buildFallbackReply(fallbackText, intent, ragCards);
+        return replyService.buildFallbackReply(fallbackText, intent, ragCards, toolResults);
     }
 
     /** 粗判模型回复是否包含结构化信息（工单号 / 服务器名 / 指标值等） */

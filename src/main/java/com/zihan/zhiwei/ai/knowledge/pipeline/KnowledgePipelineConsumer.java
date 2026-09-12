@@ -11,6 +11,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -38,6 +39,7 @@ public class KnowledgePipelineConsumer {
     private final AiRagService aiRagService;
     private final PgVectorKnowledgeRepository pgVectorKnowledgeRepository;
     private final DocumentEmitterRegistry emitterRegistry;
+    private final RabbitTemplate rabbitTemplate;
 
 
     @Value("${zhiwei.ai.knowledge.embed-batch-size:16}")
@@ -63,6 +65,7 @@ public class KnowledgePipelineConsumer {
         if (fileContent == null || fileContent.length == 0) {
             log.error("[Pipeline Consumer] fileContent is empty for documentId={}", documentId);
             updateStatus(doc, "FAILED", 0, 0, "文件内容为空，无法处理");
+            park(message, raw, "文件内容为空，无法处理");
             return;
         }
 
@@ -192,17 +195,22 @@ public class KnowledgePipelineConsumer {
 
     private void park(KnowledgePipelineMessage message, Message raw, String reason) {
         try {
-            org.springframework.amqp.rabbit.core.RabbitTemplate template =
-                    new org.springframework.amqp.rabbit.core.RabbitTemplate(
-                            ((org.springframework.amqp.rabbit.connection.ConnectionFactory)
-                                    org.springframework.beans.factory.BeanFactoryUtils
-                                            .beanOfType(
-                                                    org.springframework.web.context.ContextLoader.getCurrentWebApplicationContext(),
-                                                    org.springframework.amqp.rabbit.connection.ConnectionFactory.class)
-                                    ));
-            // 简单方式：直接用已配置的 rabbitTemplate
+            if (raw != null) {
+                raw.getMessageProperties().setHeader("x-zhiwei-parking-reason", reason);
+                rabbitTemplate.send(
+                        KnowledgePipelineConfig.DLX_EXCHANGE,
+                        KnowledgePipelineConfig.PARKING_ROUTING,
+                        raw);
+            } else {
+                rabbitTemplate.convertAndSend(
+                        KnowledgePipelineConfig.DLX_EXCHANGE,
+                        KnowledgePipelineConfig.PARKING_ROUTING,
+                        message);
+            }
+            log.warn("[Pipeline] parked documentId={} reason={}", message.getDocumentId(), reason);
         } catch (Exception e) {
-            log.debug("[Pipeline] park failed: {}", e.getMessage());
+            log.error("[Pipeline] park failed documentId={}: {}", message.getDocumentId(), e.getMessage(), e);
+            throw new IllegalStateException("消息写入停车场失败", e);
         }
     }
 

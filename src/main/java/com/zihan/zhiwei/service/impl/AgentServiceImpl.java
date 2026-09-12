@@ -77,6 +77,7 @@ public class AgentServiceImpl implements AgentService {
     private final AgentClarificationService clarificationService;
     private final SpringAiSafetyAdvisor safetyAdvisor;
     private final IdempotentRequestCache idempotencyService;
+    private final AssistantCompletionService assistantCompletionService;
 
     /**
      * P0-3 修复：注入 ObjectMapper 用于 JSON 序列化卡片数据，
@@ -188,11 +189,12 @@ public class AgentServiceImpl implements AgentService {
 
         AgentReply reply;
         AgentReply fallback = fallbackHandler.fallbackIfNeeded(
-                request.message(), modelText, primaryIntent);
+                request.message(), modelText, primaryIntent, toolResultCollector.getAll());
         if (fallback != null) {
             reply = fallback;
         } else {
-            reply = replyService.buildReply(modelText, primaryIntent, failoverResult.degraded());
+            reply = replyService.buildReply(modelText, primaryIntent, failoverResult.degraded(),
+                    toolResultCollector.getAll());
         }
 
         String encodedContent = replyService.encode(reply);
@@ -372,11 +374,13 @@ public class AgentServiceImpl implements AgentService {
 
         String modelText = fullContent.toString();
         AgentReply reply;
-        AgentReply fallback = fallbackHandler.fallbackIfNeeded(request.message(), modelText, primaryIntent);
+        AgentReply fallback = fallbackHandler.fallbackIfNeeded(
+                request.message(), modelText, primaryIntent, toolResultCollector.getAll());
         if (fallback != null) {
             reply = fallback;
         } else {
-            reply = replyService.buildReply(modelText, primaryIntent, false);
+            reply = replyService.buildReply(modelText, primaryIntent, false,
+                    toolResultCollector.getAll());
         }
 
         if (reply.getCards() != null && !reply.getCards().isEmpty()) {
@@ -395,9 +399,9 @@ public class AgentServiceImpl implements AgentService {
                 modelText, streamResult.model(), streamResult.provider(),
                 streamResult.promptTokens(), streamResult.completionTokens(), streamResult.totalTokens());
 
-        // P2-12 修复：将助手消息保存 + usage 记录抽为事务原子方法
-        Message assistantMessage = saveStreamCompletion(
-                conversation.getId(), encodedContent, providerResponse, 0L, false);
+        Message assistantMessage = assistantCompletionService.saveCompletion(
+                conversation.getId(), encodedContent, providerResponse, "agent",
+                System.currentTimeMillis() - agentStreamStart, false);
 
         log.info("[StreamAgent] done intent={} provider={} cards={} tokens={}",
                 primaryIntent, streamResult.provider(),
@@ -431,20 +435,6 @@ public class AgentServiceImpl implements AgentService {
         return preferred != null && !preferred.isBlank() ? preferred : "none";
     }
 
-    /**
-     * P2-12 修复：流式完成后，在事务中原子地保存助手消息 + 记录 usage。
-     * 不与长时间的 SSE 流转共享事务，避免长事务锁表。
-     */
-    @Transactional
-    private Message saveStreamCompletion(Long conversationId, String content,
-                                          ProviderChatResponse providerResponse,
-                                          long latencyMs, boolean degraded) {
-        Message assistantMessage = conversationService.saveMessage(
-                conversationId, "assistant", content);
-        usageRecorder.record(conversationId, assistantMessage.getId(),
-                providerResponse, "agent", latencyMs, degraded);
-        return assistantMessage;
-    }
 
     private List<ToolCallResult> simulateToolCalls(String intent, String message) {
         // P1-6 修复：Mock 工具服务未注入时直接返回空列表

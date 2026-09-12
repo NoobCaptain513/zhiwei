@@ -38,6 +38,7 @@ public class ChatServiceImpl implements ChatService {
     private final RagMessageAugmentor ragMessageAugmentor;
     private final SpringAiSafetyAdvisor safetyAdvisor;
     private final IdempotentRequestCache idempotencyService;
+    private final AssistantCompletionService assistantCompletionService;
 
     @Override
     @Transactional
@@ -211,11 +212,12 @@ public class ChatServiceImpl implements ChatService {
                     content, streamResult.model(), streamResult.provider(),
                     streamResult.promptTokens(), streamResult.completionTokens(), streamResult.totalTokens());
 
-            // P2-12 修复：将最后的 DB 写入抽为 @Transactional 原子方法
-            saveStreamCompletion(conversation.getId(), content, providerResponse, 0L, false);
+            Message assistantMessage = assistantCompletionService.saveCompletion(
+                    conversation.getId(), content, providerResponse, UsageRecorder.MODE_CHAT,
+                    System.currentTimeMillis() - streamStart, false);
 
             idempotencyService.remember(idemLease, requestFingerprint,
-                    new ChatResponse(conversation.getId(), null, content,
+                    new ChatResponse(conversation.getId(), assistantMessage.getId(), content,
                             providerResponse.model(), providerResponse.provider(),
                             providerResponse.totalTokens()));
 
@@ -231,16 +233,4 @@ public class ChatServiceImpl implements ChatService {
         return preferred != null && !preferred.isBlank() ? preferred : "none";
     }
 
-    /**
-     * P2-12 修复：流式完成后，在事务中原子地保存助手消息 + 记录 usage。
-     * 不与长时间的 SSE 流转共享事务，避免长事务锁表。
-     */
-    @Transactional
-    private void saveStreamCompletion(Long conversationId, String content,
-                                       ProviderChatResponse providerResponse,
-                                       long latencyMs, boolean degraded) {
-        conversationService.saveMessage(conversationId, "assistant", content);
-        usageRecorder.record(conversationId, null, providerResponse,
-                UsageRecorder.MODE_CHAT, latencyMs, degraded);
-    }
 }

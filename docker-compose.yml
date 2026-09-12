@@ -140,6 +140,14 @@ services:
     environment:
       SPRING_PROFILES_ACTIVE: docker
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?请先设置 DASHSCOPE_API_KEY}
+      MYSQL_USER: zhiwei
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-zhiwei123}
+      POSTGRES_USER: ${POSTGRES_USER:-zhiwei}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-zhiwei123}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-zhiwei123}
+      RABBITMQ_USER: ${RABBITMQ_USER:-zhiwei}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-zhiwei123}
+      ZHIWEI_API_KEYS: ${ZHIWEI_API_KEYS:?请先设置 ZHIWEI_API_KEYS}
       TZ: Asia/Shanghai
     depends_on:
       mysql:
@@ -167,6 +175,14 @@ services:
     environment:
       SPRING_PROFILES_ACTIVE: mcp,docker
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?请先设置 DASHSCOPE_API_KEY}
+      MYSQL_USER: zhiwei
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-zhiwei123}
+      POSTGRES_USER: ${POSTGRES_USER:-zhiwei}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-zhiwei123}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-zhiwei123}
+      RABBITMQ_USER: ${RABBITMQ_USER:-zhiwei}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-zhiwei123}
+      ZHIWEI_API_KEYS: ${ZHIWEI_API_KEYS:?请先设置 ZHIWEI_API_KEYS}
       SERVER_PORT: 8081
       TZ: Asia/Shanghai
     depends_on:
@@ -175,6 +191,8 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
     networks:
       - zhiwei-net

@@ -16,10 +16,9 @@ import java.util.List;
 public class SecurityProperties {
 
     /**
-     * 是否启用 API Key 鉴权。
-     * 第一周建议 false，联调通过后再开启。
+     * 是否启用 API Key 鉴权。默认开启；未配置合法 key 时拒绝受保护请求。
      */
-    private boolean apiKeyEnabled = false;
+    private boolean apiKeyEnabled = true;
 
     /**
      * 合法的 API Key 列表。
@@ -39,6 +38,7 @@ public class SecurityProperties {
             "/swagger-ui/**",
             "/swagger-ui.html",
             "/v3/api-docs/**",
+            "/api/auth/**",
             "/error"
     );
 }

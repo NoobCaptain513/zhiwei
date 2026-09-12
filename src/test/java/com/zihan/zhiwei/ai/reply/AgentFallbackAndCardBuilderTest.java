@@ -37,9 +37,9 @@ class AgentFallbackAndCardBuilderTest {
         resultCardAssembler = new ResultCardAssembler(new com.fasterxml.jackson.databind.ObjectMapper());
         toolResultCollector = new ToolResultCollector();
         AgentReplyService replyService = new AgentReplyService(
-                resultCardAssembler, toolResultCollector, new com.fasterxml.jackson.databind.ObjectMapper());
+                resultCardAssembler, new com.fasterxml.jackson.databind.ObjectMapper());
         fallbackHandler = new AgentFallbackHandler(
-                aiRagService, ragCardBuilder, resultCardAssembler, toolResultCollector, replyService);
+                aiRagService, ragCardBuilder, resultCardAssembler, replyService);
     }
 
     // ──────────────────────────────────────────
@@ -57,7 +57,7 @@ class AgentFallbackAndCardBuilderTest {
                     .toolName("queryServerStatus").success(true).data("{}").build());
 
             AgentReply result = fallbackHandler.fallbackIfNeeded(
-                    "test", "short", AgentIntent.FAULT);
+                    "test", "short", AgentIntent.FAULT, toolResultCollector.getAll());
 
             assertThat(result).isNull();
             verifyNoInteractions(aiRagService);
@@ -69,7 +69,7 @@ class AgentFallbackAndCardBuilderTest {
             String longReply = "服务器目前运行正常，CPU 使用率 23%，内存 61%，磁盘空间充足。建议关注 OOM 配置参数。";
 
             AgentReply result = fallbackHandler.fallbackIfNeeded(
-                    "redis 宕机", longReply, AgentIntent.FAULT);
+                    "redis 宕机", longReply, AgentIntent.FAULT, toolResultCollector.getAll());
 
             assertThat(result).isNull();
         }
@@ -84,7 +84,7 @@ class AgentFallbackAndCardBuilderTest {
             when(aiRagService.search(eq("redis 问题"), anyInt(), anyInt())).thenReturn(ragHits);
 
             AgentReply result = fallbackHandler.fallbackIfNeeded(
-                    "redis 问题", "不太清楚", AgentIntent.RAG);
+                    "redis 问题", "不太清楚", AgentIntent.RAG, toolResultCollector.getAll());
 
             assertThat(result).isNotNull();
             assertThat(result.getText()).contains("知识库");
@@ -101,7 +101,7 @@ class AgentFallbackAndCardBuilderTest {
             when(aiRagService.search(anyString(), anyInt(), anyInt())).thenReturn(List.of());
 
             AgentReply result = fallbackHandler.fallbackIfNeeded(
-                    "test", "不清楚", AgentIntent.RAG);
+                    "test", "不清楚", AgentIntent.RAG, toolResultCollector.getAll());
 
             assertThat(result).isNotNull();
             assertThat(result.getCards()).isEmpty();
