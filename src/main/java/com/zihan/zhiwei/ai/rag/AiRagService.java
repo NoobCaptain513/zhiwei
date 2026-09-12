@@ -182,9 +182,33 @@ public class AiRagService {
         return searchWithRewrite(query, null, null, topK, candidateK);
     }
 
+    /**
+     * 不做隐式查询改写的检索入口，供 Agentic RAG 按已制定的计划执行。
+     */
+    public List<RagHit> searchRaw(String query, String provider, Integer topK, Integer candidateK) {
+        return searchRaw(query, provider, topK, candidateK, vectorWeight, keywordWeight);
+    }
+
+    /** 按计划指定混合召回权重。 */
+    public List<RagHit> searchRaw(String query, String provider, Integer topK, Integer candidateK,
+                                  double plannedVectorWeight, double plannedKeywordWeight) {
+        if (query == null || query.isBlank()) {
+            throw new BusinessException("query 不能为空");
+        }
+        int top = topK == null || topK <= 0 ? defaultTopK : topK;
+        int cand = candidateK == null || candidateK <= 0 ? defaultCandidateK : candidateK;
+        return singleQuerySearch(query.trim(), provider, top, Math.max(top, cand),
+                Math.max(0.0, plannedVectorWeight), Math.max(0.0, plannedKeywordWeight));
+    }
+
     // ==================== 单查询检索 ====================
 
     private List<RagHit> singleQuerySearch(String query, String provider, int top, int cand) {
+        return singleQuerySearch(query, provider, top, cand, vectorWeight, keywordWeight);
+    }
+
+    private List<RagHit> singleQuerySearch(String query, String provider, int top, int cand,
+                                           double selectedVectorWeight, double selectedKeywordWeight) {
         // 根据 Provider 选择 Embedding 客户端
         EmbeddingClient client = (provider != null && embeddingSelector != null)
                 ? embeddingSelector.select(provider)
@@ -210,7 +234,8 @@ public class AiRagService {
         }
 
         List<RrfFusion.FusedHit> fused = rrfFusion.fuse(
-                vectorResults, keywordResults, rrfK, vectorWeight, keywordWeight, top);
+                vectorResults, keywordResults, rrfK,
+                selectedVectorWeight, selectedKeywordWeight, top);
 
         List<RagHit> rrfHits = new ArrayList<>(fused.size());
         for (RrfFusion.FusedHit fh : fused) {

@@ -8,6 +8,9 @@ import com.zihan.zhiwei.ai.provider.dto.ProviderChatResponse;
 import com.zihan.zhiwei.ai.provider.failover.FailoverResult;
 import com.zihan.zhiwei.ai.rag.RagContextBuilder;
 import com.zihan.zhiwei.ai.rag.RagMessageAugmentor;
+import com.zihan.zhiwei.ai.rag.agentic.AgenticRagOrchestrator;
+import com.zihan.zhiwei.ai.rag.agentic.model.AgenticRagResult;
+import com.zihan.zhiwei.ai.rag.agentic.model.Citation;
 import com.zihan.zhiwei.ai.reply.*;
 import com.zihan.zhiwei.ai.safety.SpringAiSafetyAdvisor;
 import com.zihan.zhiwei.ai.tool.OpsAgentToolService;
@@ -34,6 +37,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -59,6 +63,7 @@ class AgentServiceImplTest {
     @Mock private IdempotencyService idempotencyService;
     @Mock private ObjectProvider<ToolResultCollector> toolResultCollectorProvider;
     @Mock private AssistantCompletionService assistantCompletionService;
+    @Mock private AgenticRagOrchestrator agenticRagOrchestrator;
 
     private ToolResultCollector toolResultCollector = new ToolResultCollector();
     private AgentReplyService replyService;
@@ -240,6 +245,73 @@ class AgentServiceImplTest {
             assertThat(response.getIntent()).isEqualTo(AgentIntent.RAG);
             verify(opsAgentToolService, never()).execute(anyString(), anyMap());
             verify(ragMessageAugmentor).augmentIfEnabled(anyList(), isNull());
+        }
+
+        @Test
+        @DisplayName("启用 Agentic RAG → 返回验证答案和引用卡片，不执行旧增强")
+        void shouldUseAgenticRagResultWithCitationCards() {
+            setupCommonMocks(AgentIntent.RAG, "Redis MOVED 怎么处理");
+            ReflectionTestUtils.setField(service, "agenticRagEnabled", true);
+            ReflectionTestUtils.setField(service, "agenticRagOrchestrator", agenticRagOrchestrator);
+            AgenticRagResult grounded = new AgenticRagResult(true, "按手册处理 [E7]", List.of(
+                    new Citation("E7", 7L, 3L, "runbook-7", "Redis 手册", 0.91)),
+                    2, true, false, "ANSWERED", "spring-ai-alibaba", "qwen-plus",
+                    20, 10, 30, false, 100);
+            when(agenticRagOrchestrator.execute(any())).thenReturn(grounded);
+
+            AgentResponse response = service.agent(new AgentRequest(
+                    "u1", null, "Redis MOVED 怎么处理", null, false, null, null));
+
+            assertThat(response.getContent()).isEqualTo("按手册处理 [E7]");
+            assertThat(response.getCards()).singleElement().satisfies(card -> {
+                assertThat(card.getType()).isEqualTo("rag");
+                assertThat(card.getSourceId()).isEqualTo("runbook-7");
+                assertThat(card.getFields()).containsEntry("证据ID", "E7");
+            });
+            verify(ragMessageAugmentor, never()).augmentIfEnabled(anyList(), nullable(String.class));
+            verify(modelProviderRouter, never()).executeWithFailover(any());
+        }
+
+        @Test
+        @DisplayName("Agentic 分类无需检索 → 普通生成且不执行旧 RAG 增强")
+        void shouldSkipLegacyRetrievalWhenAgenticClassifierBypassesRag() {
+            setupCommonMocks(AgentIntent.RAG, "你好");
+            ReflectionTestUtils.setField(service, "agenticRagEnabled", true);
+            ReflectionTestUtils.setField(service, "agenticRagOrchestrator", agenticRagOrchestrator);
+            when(agenticRagOrchestrator.execute(any())).thenReturn(AgenticRagResult.notRequired());
+
+            AgentResponse response = service.agent(new AgentRequest(
+                    "u1", null, "你好", null, false, null, null));
+
+            assertThat(response.getContent()).isEqualTo("模型回复...");
+            verify(ragMessageAugmentor, never()).augmentIfEnabled(anyList(), nullable(String.class));
+            verify(modelProviderRouter).executeWithFailover(any());
+        }
+
+        @Test
+        @DisplayName("流式 Agentic RAG → 验证完成后才发送答案和引用")
+        void shouldEmitVerifiedAgenticAnswerAndCitations() {
+            setupCommonMocks(AgentIntent.RAG, "Redis MOVED 怎么处理");
+            ReflectionTestUtils.setField(service, "agenticRagEnabled", true);
+            ReflectionTestUtils.setField(service, "agenticRagOrchestrator", agenticRagOrchestrator);
+            AgenticRagResult grounded = new AgenticRagResult(true, "验证后的答案 [E7]", List.of(
+                    new Citation("E7", 7L, 3L, "runbook-7", "Redis 手册", 0.91)),
+                    2, true, false, "ANSWERED", "spring-ai-alibaba", "qwen-plus",
+                    20, 10, 30, false, 100);
+            when(agenticRagOrchestrator.execute(any())).thenReturn(grounded);
+            when(assistantCompletionService.saveCompletion(anyLong(), anyString(), any(),
+                    eq("agent"), anyLong(), eq(false))).thenReturn(buildMsg(1000L, "saved"));
+            List<String> tokens = new ArrayList<>();
+            List<String> cards = new ArrayList<>();
+
+            var result = service.streamAgent(new AgentRequest(
+                    "u1", null, "Redis MOVED 怎么处理", null, false, null, null),
+                    tokens::add, cards::add);
+
+            assertThat(tokens).containsExactly("验证后的答案 [E7]");
+            assertThat(cards).singleElement().asString().contains("runbook-7");
+            assertThat(result.getContent()).isEqualTo("验证后的答案 [E7]");
+            verify(modelProviderRouter, never()).streamChatWithFailover(any(), any());
         }
     }
 

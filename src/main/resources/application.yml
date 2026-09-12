@@ -78,6 +78,14 @@ zhiwei:
       sub-query-timeout-ms: 8000
       rewrite-cache-size: 1000
       rewrite-cache-ttl-seconds: 600
+      agentic:
+        enabled: ${AGENTIC_RAG_ENABLED:true}
+        max-rewrite-attempts: 2
+        max-candidate-k: 100
+        min-evidence: 1
+        classifier-model: qwen-plus
+        grader-model: qwen-plus
+        answer-model: qwen-plus
     knowledge:
       embed-batch-size: 16
       mq:

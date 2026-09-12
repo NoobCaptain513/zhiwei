@@ -11,6 +11,10 @@ import com.zihan.zhiwei.ai.provider.dto.ProviderChatResponse;
 import com.zihan.zhiwei.ai.provider.failover.FailoverResult;
 import com.zihan.zhiwei.ai.rag.RagContextBuilder;
 import com.zihan.zhiwei.ai.rag.RagMessageAugmentor;
+import com.zihan.zhiwei.ai.rag.agentic.AgenticRagOrchestrator;
+import com.zihan.zhiwei.ai.rag.agentic.model.AgenticRagRequest;
+import com.zihan.zhiwei.ai.rag.agentic.model.AgenticRagResult;
+import com.zihan.zhiwei.ai.rag.agentic.model.Citation;
 import com.zihan.zhiwei.ai.reply.AgentClarificationService;
 import com.zihan.zhiwei.ai.reply.AgentFallbackHandler;
 import com.zihan.zhiwei.ai.reply.AgentReply;
@@ -34,6 +38,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -78,6 +83,12 @@ public class AgentServiceImpl implements AgentService {
     private final SpringAiSafetyAdvisor safetyAdvisor;
     private final IdempotentRequestCache idempotencyService;
     private final AssistantCompletionService assistantCompletionService;
+
+    @Autowired(required = false)
+    private AgenticRagOrchestrator agenticRagOrchestrator;
+
+    @Value("${zhiwei.ai.rag.agentic.enabled:false}")
+    private boolean agenticRagEnabled;
 
     /**
      * P0-3 修复：注入 ObjectMapper 用于 JSON 序列化卡片数据，
@@ -158,6 +169,35 @@ public class AgentServiceImpl implements AgentService {
             return clarificationResponse;
         }
 
+        AgenticRagResult agenticRag = executeAgenticRag(
+                primaryIntent, request, buildAgenticHistory(history));
+        if (agenticRag != null && agenticRag.ragRequired()) {
+            List<AgentReply.Card> citationCards = buildCitationCards(agenticRag.citations());
+            AgentReply groundedReply = replyService.buildFallbackReply(
+                    agenticRag.answer(), primaryIntent, citationCards, List.of());
+            String encoded = replyService.encode(groundedReply);
+            Message assistantMessage = conversationService.saveMessage(
+                    conversation.getId(), "assistant", encoded);
+            if (agenticRag.totalTokens() > 0) {
+                usageRecorder.record(conversation.getId(), assistantMessage.getId(),
+                        toProviderResponse(agenticRag), "agent",
+                        agenticRag.latencyMs(), agenticRag.degraded());
+            }
+            AgentResponse groundedResponse = AgentResponse.builder()
+                    .conversationId(conversation.getId())
+                    .messageId(assistantMessage.getId())
+                    .content(agenticRag.answer())
+                    .cards(citationCards)
+                    .intent(primaryIntent)
+                    .provider(agenticRag.provider())
+                    .model(agenticRag.model())
+                    .totalTokens(agenticRag.totalTokens())
+                    .degraded(agenticRag.degraded())
+                    .build();
+            idempotencyService.remember(idemLease, requestFingerprint, groundedResponse);
+            return groundedResponse;
+        }
+
         String systemPrompt = promptService.buildSystemPrompt(primaryIntent, Map.of(
                 "user", request.userId(),
                 "time", java.time.LocalDateTime.now()
@@ -170,7 +210,8 @@ public class AgentServiceImpl implements AgentService {
         }
 
         List<ProviderChatMessage> providerMessages = buildMessages(
-                systemPrompt, history, toolResultCollector.toContextBlock(), request.message(), request.preferredProvider());
+                systemPrompt, history, toolResultCollector.toContextBlock(), request.message(),
+                request.preferredProvider(), agenticRag == null);
 
         long agentStart = System.currentTimeMillis();
         FailoverResult failoverResult;
@@ -339,6 +380,39 @@ public class AgentServiceImpl implements AgentService {
             return clarificationResult;
         }
 
+        AgenticRagResult agenticRag = executeAgenticRag(
+                primaryIntent, request, buildAgenticHistory(history));
+        if (agenticRag != null && agenticRag.ragRequired()) {
+            List<AgentReply.Card> citationCards = buildCitationCards(agenticRag.citations());
+            onToken.accept(agenticRag.answer());
+            if (!citationCards.isEmpty()) {
+                try {
+                    onCard.accept(objectMapper.writeValueAsString(citationCards));
+                } catch (Exception e) {
+                    log.warn("[AgenticRAG] stream citation card failed: {}", e.getMessage());
+                }
+            }
+            AgentReply groundedReply = replyService.buildFallbackReply(
+                    agenticRag.answer(), primaryIntent, citationCards, List.of());
+            ProviderChatResponse providerResponse = toProviderResponse(agenticRag);
+            Message assistantMessage = assistantCompletionService.saveCompletion(
+                    conversation.getId(), replyService.encode(groundedReply), providerResponse,
+                    "agent", agenticRag.latencyMs(), agenticRag.degraded());
+            AgentStreamResult groundedResult = AgentStreamResult.builder()
+                    .conversationId(conversation.getId())
+                    .messageId(assistantMessage.getId())
+                    .content(agenticRag.answer())
+                    .cards(citationCards)
+                    .intent(primaryIntent)
+                    .model(agenticRag.model())
+                    .provider(agenticRag.provider())
+                    .totalTokens(agenticRag.totalTokens())
+                    .degraded(agenticRag.degraded())
+                    .build();
+            idempotencyService.remember(idemLease, requestFingerprint, groundedResult);
+            return groundedResult;
+        }
+
         String systemPrompt = promptService.buildSystemPrompt(primaryIntent, Map.of(
                 "user", request.userId(),
                 "time", java.time.LocalDateTime.now()
@@ -351,7 +425,8 @@ public class AgentServiceImpl implements AgentService {
         }
 
         List<ProviderChatMessage> providerMessages = buildMessages(
-                systemPrompt, history, toolResultCollector.toContextBlock(), request.message(), request.preferredProvider());
+                systemPrompt, history, toolResultCollector.toContextBlock(), request.message(),
+                request.preferredProvider(), agenticRag == null);
 
         StringBuilder fullContent = new StringBuilder();
         Consumer<String> trackingOnToken = token -> {
@@ -435,6 +510,65 @@ public class AgentServiceImpl implements AgentService {
         return preferred != null && !preferred.isBlank() ? preferred : "none";
     }
 
+    private AgenticRagResult executeAgenticRag(
+            String primaryIntent, AgentRequest request, String historyContext) {
+        if (!agenticRagEnabled || agenticRagOrchestrator == null
+                || !AgentIntent.RAG.equals(primaryIntent)) {
+            return null;
+        }
+        return agenticRagOrchestrator.execute(new AgenticRagRequest(
+                request.message(), historyContext, request.preferredProvider(), request.model()));
+    }
+
+    private String buildAgenticHistory(List<Message> history) {
+        if (history == null || history.isEmpty()) {
+            return null;
+        }
+        StringBuilder context = new StringBuilder();
+        int start = Math.max(0, history.size() - 6);
+        for (int i = start; i < history.size(); i++) {
+            Message message = history.get(i);
+            String content = message.getContent();
+            if ("assistant".equalsIgnoreCase(message.getRole())) {
+                content = replyService.decode(content).getText();
+            }
+            if (content != null && !content.isBlank()) {
+                if (content.length() > 300) {
+                    content = content.substring(0, 300) + "...";
+                }
+                context.append(message.getRole()).append("：").append(content).append('\n');
+            }
+        }
+        return context.isEmpty() ? null : context.toString();
+    }
+
+    private static List<AgentReply.Card> buildCitationCards(List<Citation> citations) {
+        if (citations == null || citations.isEmpty()) {
+            return List.of();
+        }
+        return citations.stream().map(citation -> {
+            Map<String, String> fields = new java.util.LinkedHashMap<>();
+            fields.put("证据ID", citation.evidenceId());
+            fields.put("片段ID", String.valueOf(citation.chunkId()));
+            if (citation.documentId() != null) {
+                fields.put("文档ID", String.valueOf(citation.documentId()));
+            }
+            fields.put("综合分", String.format(java.util.Locale.ROOT, "%.4f", citation.score()));
+            return AgentReply.Card.builder()
+                    .type("rag")
+                    .title(citation.title() == null ? "知识片段" : citation.title())
+                    .sourceId(citation.sourceId() == null
+                            ? "rag:" + citation.chunkId() : citation.sourceId())
+                    .fields(fields)
+                    .build();
+        }).toList();
+    }
+
+    private static ProviderChatResponse toProviderResponse(AgenticRagResult result) {
+        return new ProviderChatResponse(result.answer(), result.model(), result.provider(),
+                result.promptTokens(), result.completionTokens(), result.totalTokens());
+    }
+
 
     private List<ToolCallResult> simulateToolCalls(String intent, String message) {
         // P1-6 修复：Mock 工具服务未注入时直接返回空列表
@@ -469,7 +603,8 @@ public class AgentServiceImpl implements AgentService {
 
     private List<ProviderChatMessage> buildMessages(
             String systemPrompt, List<Message> history,
-            String toolContext, String userMessage, String preferredProvider) {
+            String toolContext, String userMessage, String preferredProvider,
+            boolean applyLegacyRag) {
         List<ProviderChatMessage> messages = new ArrayList<>();
         StringBuilder fullSystem = new StringBuilder(systemPrompt);
         if (toolContext != null && !toolContext.isBlank()) {
@@ -481,7 +616,9 @@ public class AgentServiceImpl implements AgentService {
             Message m = history.get(i);
             messages.add(new ProviderChatMessage(m.getRole(), m.getContent()));
         }
-        messages = ragMessageAugmentor.augmentIfEnabled(messages, preferredProvider);
+        if (applyLegacyRag) {
+            messages = ragMessageAugmentor.augmentIfEnabled(messages, preferredProvider);
+        }
         return messages;
     }
 

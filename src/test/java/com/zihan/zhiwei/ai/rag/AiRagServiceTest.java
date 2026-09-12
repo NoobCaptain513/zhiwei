@@ -159,6 +159,19 @@ class AiRagServiceTest {
     class SearchTests {
 
         @Test
+        @DisplayName("原始检索入口不触发查询改写")
+        void shouldSearchRawWithoutImplicitRewrite() {
+            when(embeddingClient.embed("Redis MOVED")).thenReturn(new float[]{0.1f});
+            when(repository.searchByCosine(any(float[].class), eq(10), anyString()))
+                    .thenReturn(List.of(scoredChunk(1L, "MOVED", "处理步骤", 0.9)));
+
+            List<RagHit> hits = ragService.searchRaw("Redis MOVED", null, 5, 10);
+
+            assertThat(hits).hasSize(1);
+            verify(queryRewriter, never()).rewrite(anyString(), any());
+        }
+
+        @Test
         @DisplayName("正常检索 → 返回 topK 条结果，按 finalScore 降序")
         void shouldReturnTopKResultsSortedByFinalScore() {
             float[] mockVec = new float[]{0.1f, 0.2f, 0.3f};
