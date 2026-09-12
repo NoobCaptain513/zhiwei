@@ -1,0 +1,12 @@
+{
+    "name": "zhiwei-mcp-bridge",
+    "version": "0.1.0",
+    "description": "智维 MCP stdio → HTTP 桥接脚本",
+    "main": "zhiwei-mcp-stdio.js",
+    "scripts": {
+      "start": "node zhiwei-mcp-stdio.js",
+      "test": "node test-e2e.js"
+    },
+    "dependencies": {},
+    "devDependencies": {}
+  }
