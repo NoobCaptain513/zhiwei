@@ -1,0 +1,17 @@
+FROM eclipse-temurin:21-jdk-alpine AS builder
+WORKDIR /workspace
+COPY .mvn .mvn
+COPY mvnw pom.xml ./
+COPY src src
+RUN chmod +x mvnw && ./mvnw -DskipTests package
+
+FROM eclipse-temurin:21-jre-alpine
+WORKDIR /app
+RUN addgroup -S app && adduser -S -G app app
+COPY --chown=app:app --from=builder /workspace/target/zhiwei-*.jar app.jar
+ENV SERVER_PORT=8080
+EXPOSE 8080
+HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=5 \
+  CMD wget -qO- "http://127.0.0.1:${SERVER_PORT}/actuator/health" || exit 1
+USER app
+ENTRYPOINT ["java", "-jar", "app.jar"]

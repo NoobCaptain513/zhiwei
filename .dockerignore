@@ -1,0 +1,13 @@
+.git
+.gitignore
+.gitattributes
+.idea
+.vscode
+.zed
+target
+*.log
+.env
+src/main/resources/application-dev.yml
+Dockerfile*
+docker-compose*.yml
+README.md
