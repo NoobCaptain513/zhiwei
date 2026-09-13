@@ -8,6 +8,10 @@ import com.zihan.zhiwei.ai.rag.agentic.model.QueryClassification;
 import com.zihan.zhiwei.ai.rag.agentic.model.QuestionType;
 import com.zihan.zhiwei.ai.rag.agentic.model.RetrievalPlan;
 import com.zihan.zhiwei.ai.rag.agentic.model.RetrievalResult;
+import com.zihan.zhiwei.ai.agent.runtime.AgentNodeObserver;
+import com.zihan.zhiwei.ai.agent.runtime.AgentRunContext;
+import com.zihan.zhiwei.ai.agent.runtime.TokenBudget;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -15,6 +19,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.List;
 import java.util.Map;
+import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.never;
@@ -99,6 +104,28 @@ class AgenticRagOrchestratorTest {
 
         assertThat(orchestrator.execute(request)).isSameAs(expected);
         verify(queryRewriter, never()).rewrite(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void shouldTerminateDeterministicallyWhenTokenBudgetIsExhausted() {
+        AgentRunContext context = new AgentRunContext(
+                new TokenBudget(10, 2, 5, Duration.ofSeconds(5)),
+                new AgentNodeObserver(new SimpleMeterRegistry()));
+        AgenticRagRequest request = new AgenticRagRequest(
+                "需要检索的问题", null, null, "qwen-plus", context);
+        QueryClassifier budgetExhaustingClassifier = req -> {
+            req.runContext().reserve("classify", 20, 10, false);
+            throw new AssertionError("unreachable");
+        };
+        AgenticRagOrchestrator orchestrator = new AgenticRagOrchestrator(
+                budgetExhaustingClassifier, planner, retriever, evidenceGrader,
+                queryRewriter, answerGenerator, 2);
+
+        AgenticRagResult result = orchestrator.execute(request);
+
+        assertThat(result.terminationReason()).isEqualTo("TOKEN_BUDGET_EXHAUSTED");
+        assertThat(result.answer()).contains("预算");
+        verify(planner, never()).plan(org.mockito.ArgumentMatchers.any());
     }
 
     private static RetrievalPlan plan(String query, int candidateK) {

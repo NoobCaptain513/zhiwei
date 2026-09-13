@@ -2,6 +2,9 @@ package com.zihan.zhiwei.ai.rag.agentic;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zihan.zhiwei.ai.agent.runtime.AgentRunContext;
+import com.zihan.zhiwei.ai.agent.runtime.TokenBudget;
+import com.zihan.zhiwei.ai.agent.runtime.TokenBudgetExceededException;
 import com.zihan.zhiwei.ai.provider.ModelProviderRouter;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatMessage;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatRequest;
@@ -56,12 +59,22 @@ public class DefaultEvidenceGrader implements EvidenceGrader {
         if (hits.isEmpty()) {
             return insufficient("没有召回任何证据", NextAction.EXPAND_RECALL);
         }
-        try {
+        String prompt = buildPrompt(state, hits);
+        AgentRunContext context = state.getRequest().runContext();
+        int estimatedPrompt = AgentRunContext.estimateTokens(SYSTEM_PROMPT + prompt);
+        try (TokenBudget.Reservation reservation = context == null ? null
+                : context.reserve("grade", estimatedPrompt, 512, false)) {
             var response = router.chatWithFailover(new ProviderChatRequest(model, List.of(
                     new ProviderChatMessage("system", SYSTEM_PROMPT),
-                    new ProviderChatMessage("user", buildPrompt(state, hits)))));
+                    new ProviderChatMessage("user", prompt))));
+            if (context != null) {
+                context.commit("grade", reservation, response);
+            }
             return parse(response.content(), hits);
+        } catch (TokenBudgetExceededException e) {
+            throw e;
         } catch (Exception e) {
+            if (context != null) context.recordFailure("grade");
             log.warn("[AgenticRAG] evidence grading failed: {}", e.getMessage());
             return insufficient("证据评估失败，不能确认充分性", NextAction.REWRITE);
         }

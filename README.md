@@ -95,6 +95,25 @@ Native Provider 调用 → 解析实际计费 usage
 
 检索与重排序：pgvector 余弦检索（向量通道）+ 关键词 ILIKE 匹配（关键词通道）→ RRF 融合（Reciprocal Rank Fusion，k=60，向量权重 1.0 / 关键词权重 0.5）→ topK 返回。查询改写：LLM 调用（qwen-plus）实现指代消解 + 子问题分解，简单查询（≤5字符）走快路径跳过，改写结果 Caffeine 本地缓存（1000 条，TTL 600s）。
 
+### RAG 评测基线
+
+仓库内置冻结运维语料和静态标注集：
+
+- `evaluation/rag/corpus-v1.json`：31 条可独立索引的运维知识文档；
+- `evaluation/rag/eval-set-v1.json`：124 条查询、186 个分级相关性判断，其中 31 条需要多个相关文档；
+- `scripts/run-rag-evaluation.py`：校验数据、重建专用 `documentId=990001` 语料，并真实调用运行中服务比较 `HYBRID`、`VECTOR_HEAVY`、`KEYWORD_HEAVY`；
+- 指标：HitRate@K、Recall@K、Precision@K、MRR@K、nDCG@K。
+
+```bash
+# 只校验数据集
+python scripts/run-rag-evaluation.py --validate-only
+
+# 启动应用后，重建冻结语料并生成真实对比报告
+python scripts/run-rag-evaluation.py --base-url http://localhost:8080 --index
+```
+
+原始逐查询结果和 Markdown 汇总写入 `evaluation/rag/reports/`。标注由 Hermes Agent 静态逐项编写，未从检索结果反推；对外宣称“人工基线”前仍需两名领域人员抽检至少 20% 并记录裁决。
+
 ### Agent 与 Tool Calling
 
 意图识别模块支持 5 类意图（故障排查/日志查询/部署操作/工单创建/知识检索），基于关键词规则匹配实现（非 LLM），硬编码关键词列表 + 置信度阈值（高置信 ≥0.65 直接输出，低置信 <0.20 触发澄清）。运维工具集包含 5 个工具：`queryServerStatus`、`searchLogs`、`queryDeployHistory`、`createTicket`、`queryMetrics`（当前为 Mock 实现，需配置 `zhiwei.ai.tool.mock-enabled=true` 启用）。

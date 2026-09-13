@@ -104,6 +104,17 @@ public class OpsAgentToolService {
     public ToolCallResult execute(String toolName, Map<String, Object> params) {
         log.info("[Tool] execute tool={} params={}", toolName, params);
         try {
+            return executeRaw(toolName, params);
+        } catch (Exception e) {
+            log.warn("[Tool] tool={} failed: {}", toolName, e.getMessage());
+            return ToolCallResult.builder()
+                    .toolName(toolName).success(false).status(ToolCallStatus.FAILED)
+                    .error(e.getMessage()).build();
+        }
+    }
+
+    /** Raw adapter boundary used by the reliability executor; failures are not swallowed. */
+    public ToolCallResult executeRaw(String toolName, Map<String, Object> params) {
             return switch (toolName) {
                 case "queryServerStatus"   -> queryServerStatus(params);
                 case "searchLogs"          -> searchLogs(params);
@@ -111,15 +122,9 @@ public class OpsAgentToolService {
                 case "createTicket"        -> createTicket(params);
                 case "queryMetrics"        -> queryMetrics(params);
                 default -> ToolCallResult.builder()
-                        .toolName(toolName).success(false)
+                        .toolName(toolName).success(false).status(ToolCallStatus.FAILED)
                         .error("未知工具: " + toolName).build();
             };
-        } catch (Exception e) {
-            log.warn("[Tool] tool={} failed: {}", toolName, e.getMessage());
-            return ToolCallResult.builder()
-                    .toolName(toolName).success(false)
-                    .error(e.getMessage()).build();
-        }
     }
 
     // ========== 5 个工具实现 ==========
@@ -218,11 +223,12 @@ public class OpsAgentToolService {
             return ToolCallResult.builder()
                     .toolName(toolName)
                     .success(true)
+                    .status(ToolCallStatus.SUCCESS)
                     .data(objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(data))
                     .build();
         } catch (Exception e) {
             return ToolCallResult.builder()
-                    .toolName(toolName).success(true)
+                    .toolName(toolName).success(true).status(ToolCallStatus.SUCCESS)
                     .data(data.toString()).build();
         }
     }

@@ -1,6 +1,7 @@
 package com.zihan.zhiwei.ai.reply;
 
 import com.zihan.zhiwei.ai.tool.ToolCallResult;
+import com.zihan.zhiwei.ai.tool.ToolCallStatus;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -32,7 +33,23 @@ public class ResultCardAssembler {
         Map<String, AgentReply.Card> dedup = new LinkedHashMap<>();
 
         for (ToolCallResult result : toolResults) {
-            if (!result.isSuccess() || result.getData() == null) continue;
+            if (!result.isSuccess()) {
+                if (result.getStatus() == ToolCallStatus.APPROVAL_REQUIRED) {
+                    Map<String, String> fields = new LinkedHashMap<>();
+                    fields.put("工具", result.getToolName());
+                    fields.put("审批ID", result.getApprovalId());
+                    fields.put("说明", result.getError());
+                    AgentReply.Card card = AgentReply.Card.builder()
+                            .type("approval")
+                            .title("需要审批")
+                            .sourceId("approval:" + result.getApprovalId())
+                            .fields(fields)
+                            .build();
+                    dedup.put(card.getType() + ":" + card.getSourceId(), card);
+                }
+                continue;
+            }
+            if (result.getData() == null) continue;
 
             try {
                 JsonNode root = objectMapper.readTree(result.getData());

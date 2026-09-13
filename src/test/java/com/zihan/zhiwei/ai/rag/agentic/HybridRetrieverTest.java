@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
+import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -52,6 +53,25 @@ class HybridRetrieverTest {
         new HybridRetriever(ragService).retrieve(state);
 
         verify(ragService).searchRaw("错误码", null, 5, 20, 0.5, 1.5);
+    }
+
+    @Test
+    void shouldRunIndependentReadOnlyRetrievalTasksInParallel() {
+        AiRagService ragService = mock(AiRagService.class);
+        when(ragService.searchRaw(org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.anyInt(),
+                org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyDouble(),
+                org.mockito.ArgumentMatchers.anyDouble())).thenAnswer(invocation -> {
+            Thread.sleep(120);
+            return List.of();
+        });
+        RagState state = RagState.initial(new AgenticRagRequest("问题", null, null, "qwen-plus"));
+        state.setPlan(new RetrievalPlan(List.of(task("问题一"), task("问题二")), 5, 20, "test"));
+        long started = System.nanoTime();
+
+        new HybridRetriever(ragService).retrieve(state);
+
+        assertThat(Duration.ofNanos(System.nanoTime() - started).toMillis()).isLessThan(220);
     }
 
     private static RetrievalTask task(String query) {

@@ -2,6 +2,9 @@ package com.zihan.zhiwei.ai.rag.agentic;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zihan.zhiwei.ai.agent.runtime.AgentRunContext;
+import com.zihan.zhiwei.ai.agent.runtime.TokenBudget;
+import com.zihan.zhiwei.ai.agent.runtime.TokenBudgetExceededException;
 import com.zihan.zhiwei.ai.provider.ModelProviderRouter;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatMessage;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatRequest;
@@ -48,10 +51,16 @@ public class DefaultQueryClassifier implements QueryClassifier {
             return new QueryClassification(false, QuestionType.CONVERSATIONAL,
                     false, false, 1.0, "普通会话无需检索");
         }
-        try {
+        AgentRunContext context = request.runContext();
+        int estimatedPrompt = AgentRunContext.estimateTokens(SYSTEM_PROMPT + query);
+        try (TokenBudget.Reservation reservation = context == null ? null
+                : context.reserve("classify", estimatedPrompt, 256, false)) {
             var response = router.chatWithFailover(new ProviderChatRequest(model, List.of(
                     new ProviderChatMessage("system", SYSTEM_PROMPT),
                     new ProviderChatMessage("user", "用户问题：" + query))));
+            if (context != null) {
+                context.commit("classify", reservation, response);
+            }
             JsonNode root = objectMapper.readTree(extractJson(response.content()));
             QuestionType type = parseQuestionType(root.path("questionType").asText());
             return new QueryClassification(
@@ -61,7 +70,10 @@ public class DefaultQueryClassifier implements QueryClassifier {
                     root.path("multiHop").asBoolean(false),
                     clamp(root.path("confidence").asDouble(0.5)),
                     root.path("reason").asText("模型分类"));
+        } catch (TokenBudgetExceededException e) {
+            throw e;
         } catch (Exception e) {
+            if (context != null) context.recordFailure("classify");
             log.warn("[AgenticRAG] classifier failed, default to RAG: {}", e.getMessage());
             return new QueryClassification(true, inferType(query), false,
                     looksMultiHop(query), 0.5, "分类失败，保守启用检索");

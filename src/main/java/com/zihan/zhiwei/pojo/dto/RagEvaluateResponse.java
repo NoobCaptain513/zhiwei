@@ -18,6 +18,13 @@ public class RagEvaluateResponse {
     /** 总查询数 */
     private int totalQueries;
 
+    /** 本次评测变体名称与实际检索参数 */
+    private String variant;
+    private String strategy;
+    private int topK;
+    private int candidateK;
+    private long durationMs;
+
     /** 命中数（topK 内返回至少一条相关内容） */
     private int hitCount;
     /** 召回率 = hitCount / totalQueries */
@@ -29,6 +36,9 @@ public class RagEvaluateResponse {
     /** 平均综合分 */
     private double avgFinalScore;
 
+    /** 标准宏平均检索指标。 */
+    private Metrics metrics;
+
     /** 逐条评估明细 */
     private List<QueryDetail> details;
 
@@ -38,6 +48,7 @@ public class RagEvaluateResponse {
     @Data
     @Builder
     public static class QueryDetail {
+        private String caseId;
         private String query;
         private boolean hit;
         private int topRank;
@@ -45,6 +56,27 @@ public class RagEvaluateResponse {
         private String matchedSource;
         /** 人工标注的期望 sourceId */
         private String expectedSource;
+        private List<RelevanceJudgment> relevantDocuments;
+        private List<String> retrievedSourceIds;
+        private Metrics metrics;
+    }
+
+    @Data
+    @Builder
+    public static class RelevanceJudgment {
+        private String sourceId;
+        private int relevance;
+    }
+
+    @Data
+    @Builder
+    public static class Metrics {
+        private int k;
+        private double hitRate;
+        private double recall;
+        private double precision;
+        private double mrr;
+        private double ndcg;
     }
 
     @Data
@@ -52,10 +84,14 @@ public class RagEvaluateResponse {
     public static class AbComparison {
         private String variantA;
         private String variantB;
+        private String strategyA;
+        private String strategyB;
         private double recallA;
         private double recallB;
         private double avgRankA;
         private double avgRankB;
+        private Metrics metricsA;
+        private Metrics metricsB;
         private String winner;
     }
 }

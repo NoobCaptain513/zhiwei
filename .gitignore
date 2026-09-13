@@ -47,6 +47,8 @@ logs/
 *.pid
 hs_err_pid*
 replay_pid*
+__pycache__/
+*.py[cod]
 
 ### OS and accidental files ###
 .DS_Store

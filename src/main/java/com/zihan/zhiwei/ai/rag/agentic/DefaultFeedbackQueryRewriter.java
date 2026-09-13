@@ -33,8 +33,10 @@ public class DefaultFeedbackQueryRewriter implements FeedbackQueryRewriter {
         String gaps = String.join("；", state.getLatestGrade().gaps());
         String feedbackQuery = state.getRequest().query()
                 + (gaps.isBlank() ? "" : "。需要补充检索：" + gaps);
-        QueryRewriteResult rewrite = queryRewriter.rewrite(
-                feedbackQuery, state.getRequest().historyContext());
+        QueryRewriteResult rewrite = state.getRequest().runContext() == null
+                ? queryRewriter.rewrite(feedbackQuery, state.getRequest().historyContext())
+                : queryRewriter.rewrite(feedbackQuery, state.getRequest().historyContext(),
+                        state.getRequest().runContext(), "rewrite");
 
         RetrievalStrategy strategy = nextStrategy(
                 state.getLatestGrade().nextAction(), state.getPlan().tasks());

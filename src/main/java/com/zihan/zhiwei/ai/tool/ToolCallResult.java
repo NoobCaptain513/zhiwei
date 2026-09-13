@@ -17,4 +17,12 @@ public class ToolCallResult {
     private String data;
     /** 失败时的错误信息 */
     private String error;
+    /** 可靠执行层的终态；旧调用方未设置时允许为 null */
+    private ToolCallStatus status;
+    /** 实际尝试次数 */
+    private int attempts;
+    /** 工具调用耗时 */
+    private long latencyMs;
+    /** 有副作用工具的审批凭证 */
+    private String approvalId;
 }

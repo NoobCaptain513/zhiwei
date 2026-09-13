@@ -1,6 +1,9 @@
 package com.zihan.zhiwei.ai.rag.agentic;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zihan.zhiwei.ai.agent.runtime.AgentNodeObserver;
+import com.zihan.zhiwei.ai.agent.runtime.AgentRunContext;
+import com.zihan.zhiwei.ai.agent.runtime.TokenBudget;
 import com.zihan.zhiwei.ai.provider.ModelProviderRouter;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatResponse;
 import com.zihan.zhiwei.ai.provider.failover.FailoverResult;
@@ -11,7 +14,9 @@ import com.zihan.zhiwei.ai.rag.agentic.model.RetrievalResult;
 import com.zihan.zhiwei.ai.rag.dto.KnowledgeChunk;
 import com.zihan.zhiwei.ai.rag.dto.RagHit;
 import org.junit.jupiter.api.Test;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
+import java.time.Duration;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -32,7 +37,11 @@ class GroundedAnswerGeneratorTest {
         when(router.chatWithFailover(any())).thenReturn(new ProviderChatResponse(
                 "{\"fullySupported\":true,\"unsupportedClaims\":[]}",
                 "qwen-plus", "test", 1, 1, 2));
-        RagState state = RagState.initial(new AgenticRagRequest("怎么处理", null, null, "qwen-plus"));
+        AgentRunContext context = new AgentRunContext(
+                new TokenBudget(5_000, 1_000, 10, Duration.ofSeconds(5)),
+                new AgentNodeObserver(new SimpleMeterRegistry()));
+        RagState state = RagState.initial(new AgenticRagRequest(
+                "怎么处理", null, null, "qwen-plus", context));
         state.addRound(new RetrievalResult(List.of(hit(1), hit(2)), 3));
         state.setLatestGrade(new EvidenceGrade(true, List.of(1L), List.of("步骤"),
                 List.of(), List.of(), NextAction.ANSWER, "充分"));
@@ -41,7 +50,7 @@ class GroundedAnswerGeneratorTest {
 
         assertThat(result.answer()).isEqualTo("应按照运行手册执行 [E1]。");
         assertThat(result.citations()).extracting(citation -> citation.chunkId()).containsExactly(1L);
-        assertThat(result.totalTokens()).isEqualTo(15);
+        assertThat(result.totalTokens()).isEqualTo(17);
         assertThat(result.sufficient()).isTrue();
     }
 

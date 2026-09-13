@@ -23,7 +23,9 @@ import com.zihan.zhiwei.ai.safety.SpringAiSafetyAdvisor;
 import com.zihan.zhiwei.ai.stream.AgentStreamResult;
 import com.zihan.zhiwei.ai.stream.StreamResult;
 import com.zihan.zhiwei.ai.tool.OpsAgentToolService;
+import com.zihan.zhiwei.ai.tool.ReliableToolExecutor;
 import com.zihan.zhiwei.ai.tool.ToolCallResult;
+import com.zihan.zhiwei.ai.tool.ToolInvocation;
 import com.zihan.zhiwei.ai.tool.ToolResultCollector;
 import com.zihan.zhiwei.ai.usage.UsageRecorder;
 import com.zihan.zhiwei.common.exception.BusinessException;
@@ -71,6 +73,8 @@ public class AgentServiceImpl implements AgentService {
      */
     @Autowired(required = false)
     private OpsAgentToolService opsAgentToolService;
+    @Autowired(required = false)
+    private ReliableToolExecutor reliableToolExecutor;
     /**
      * 修复 ScopeNotActiveException：ToolResultCollector 改为 prototype scope，
      * 通过 ObjectProvider 每次调用时获取一个全新实例，
@@ -108,7 +112,8 @@ public class AgentServiceImpl implements AgentService {
         }
 
         // 幂等快速路径：同一 namespace + idempotencyKey 已处理过 → 直接返回首次结果
-        String idemNamespace = "agent";
+        String idemNamespace = request.approvalId() == null || request.approvalId().isBlank()
+                ? "agent" : "agent-approved";
         String requestFingerprint = idempotencyService.fingerprint(idemNamespace, request);
         Optional<AgentResponse> idemCached = idempotencyService.resolve(
                 idemNamespace, request.userId(), request.idempotencyKey(), AgentResponse.class,
@@ -204,7 +209,7 @@ public class AgentServiceImpl implements AgentService {
                         .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
         ));
 
-        List<ToolCallResult> toolCalls = simulateToolCalls(primaryIntent, request.message());
+        List<ToolCallResult> toolCalls = simulateToolCalls(primaryIntent, request);
         if (!toolCalls.isEmpty()) {
             toolResultCollector.addAll(toolCalls);
         }
@@ -288,7 +293,8 @@ public class AgentServiceImpl implements AgentService {
         }
 
         // 幂等快速路径：命中缓存 → 重放首次内容 + 卡片，不重新调用 LLM
-        String idemNamespace = "agent-stream";
+        String idemNamespace = request.approvalId() == null || request.approvalId().isBlank()
+                ? "agent-stream" : "agent-stream-approved";
         String requestFingerprint = idempotencyService.fingerprint(idemNamespace, request);
         Optional<AgentStreamResult> idemCached = idempotencyService.resolve(
                 idemNamespace, request.userId(), request.idempotencyKey(), AgentStreamResult.class,
@@ -419,7 +425,7 @@ public class AgentServiceImpl implements AgentService {
                         .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
         ));
 
-        List<ToolCallResult> toolCalls = simulateToolCalls(primaryIntent, request.message());
+        List<ToolCallResult> toolCalls = simulateToolCalls(primaryIntent, request);
         if (!toolCalls.isEmpty()) {
             toolResultCollector.addAll(toolCalls);
         }
@@ -570,35 +576,50 @@ public class AgentServiceImpl implements AgentService {
     }
 
 
-    private List<ToolCallResult> simulateToolCalls(String intent, String message) {
+    private List<ToolCallResult> simulateToolCalls(String intent, AgentRequest request) {
         // P1-6 修复：Mock 工具服务未注入时直接返回空列表
-        if (opsAgentToolService == null) {
+        if (request.chatOnly() || (opsAgentToolService == null && reliableToolExecutor == null)) {
             return List.of();
         }
+        String message = request.message();
         List<ToolCallResult> results = new ArrayList<>();
         switch (intent) {
             case AgentIntent.FAULT -> {
-                results.add(opsAgentToolService.execute("queryServerStatus",
-                        Map.of("hostname", extractHostname(message))));
-                results.add(opsAgentToolService.execute("queryMetrics",
-                        Map.of("service", extractHostname(message), "metric", "error_rate", "duration", "5m")));
+                List<ToolInvocation> invocations = List.of(
+                        new ToolInvocation("queryServerStatus",
+                                Map.of("hostname", extractHostname(message))),
+                        new ToolInvocation("queryMetrics",
+                                Map.of("service", extractHostname(message), "metric", "error_rate", "duration", "5m")));
+                if (reliableToolExecutor != null) {
+                    results.addAll(reliableToolExecutor.executeReadOnlyBatch(request.userId(), invocations));
+                } else {
+                    invocations.forEach(invocation -> results.add(opsAgentToolService.execute(
+                            invocation.toolName(), invocation.params())));
+                }
             }
             case AgentIntent.LOG -> {
-                results.add(opsAgentToolService.execute("searchLogs",
+                results.add(executeTool(request, "searchLogs",
                         Map.of("service", extractService(message), "keyword", "ERROR", "minutes", 30)));
             }
             case AgentIntent.DEPLOY -> {
-                results.add(opsAgentToolService.execute("queryDeployHistory",
+                results.add(executeTool(request, "queryDeployHistory",
                         Map.of("service", extractService(message))));
             }
             case AgentIntent.TICKET -> {
-                results.add(opsAgentToolService.execute("createTicket",
+                results.add(executeTool(request, "createTicket",
                         Map.of("title", "Agent 自动创建: " + message,
                                 "description", message, "priority", "P2")));
             }
             default -> { /* RAG */ }
         }
         return results;
+    }
+
+    private ToolCallResult executeTool(AgentRequest request, String toolName, Map<String, Object> params) {
+        if (reliableToolExecutor != null) {
+            return reliableToolExecutor.execute(request.userId(), request.approvalId(), toolName, params);
+        }
+        return opsAgentToolService.execute(toolName, params);
     }
 
     private List<ProviderChatMessage> buildMessages(

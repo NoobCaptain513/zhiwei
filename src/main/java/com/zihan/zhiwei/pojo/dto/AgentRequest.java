@@ -25,5 +25,13 @@ public record AgentRequest(
         String preferredProvider,
 
         /** 幂等键（可选）：客户端重试时携带同一 UUID，服务端返回首次处理结果，避免重复扣费 */
-        String idempotencyKey
-) {}
+        String idempotencyKey,
+
+        /** 有副作用工具的审批凭证；首次请求为空，审批后原样回传 */
+        String approvalId
+) {
+    public AgentRequest(String userId, Long conversationId, String message, String model,
+                        boolean chatOnly, String preferredProvider, String idempotencyKey) {
+        this(userId, conversationId, message, model, chatOnly, preferredProvider, idempotencyKey, null);
+    }
+}

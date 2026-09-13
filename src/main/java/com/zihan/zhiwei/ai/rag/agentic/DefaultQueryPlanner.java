@@ -32,8 +32,10 @@ public class DefaultQueryPlanner implements QueryPlanner {
 
     @Override
     public RetrievalPlan plan(RagState state) {
-        QueryRewriteResult rewrite = queryRewriter.rewrite(
-                state.getRequest().query(), state.getRequest().historyContext());
+        QueryRewriteResult rewrite = state.getRequest().runContext() == null
+                ? queryRewriter.rewrite(state.getRequest().query(), state.getRequest().historyContext())
+                : queryRewriter.rewrite(state.getRequest().query(), state.getRequest().historyContext(),
+                        state.getRequest().runContext(), "plan");
         RetrievalStrategy strategy = chooseStrategy(state.getClassification().questionType());
         List<RetrievalTask> tasks = rewrite.allQueries().stream()
                 .map(query -> new RetrievalTask(query, KnowledgeSource.INTERNAL_KB, strategy, Map.of()))

@@ -62,6 +62,9 @@ public class ToolResultCollector {
                 sb.append(r.getData());
             } else {
                 sb.append("调用失败: ").append(r.getError());
+                if (r.getApprovalId() != null) {
+                    sb.append("\n审批ID: ").append(r.getApprovalId());
+                }
             }
             sb.append("\n\n");
         }

@@ -248,6 +248,16 @@ class AgentServiceImplTest {
         }
 
         @Test
+        @DisplayName("chatOnly=true → 跳过所有工具")
+        void shouldSkipAllToolsInChatOnlyMode() {
+            setupCommonMocks(AgentIntent.FAULT, "只分析，不执行工具");
+
+            service.agent(new AgentRequest("u1", null, "只分析，不执行工具", null, true, null, null));
+
+            verify(opsAgentToolService, never()).execute(anyString(), anyMap());
+        }
+
+        @Test
         @DisplayName("启用 Agentic RAG → 返回验证答案和引用卡片，不执行旧增强")
         void shouldUseAgenticRagResultWithCitationCards() {
             setupCommonMocks(AgentIntent.RAG, "Redis MOVED 怎么处理");

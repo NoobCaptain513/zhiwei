@@ -4,6 +4,9 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import com.zihan.zhiwei.ai.agent.runtime.AgentRunContext;
+import com.zihan.zhiwei.ai.agent.runtime.TokenBudget;
+import com.zihan.zhiwei.ai.agent.runtime.TokenBudgetExceededException;
 import com.zihan.zhiwei.ai.provider.ModelProviderRouter;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatMessage;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatRequest;
@@ -65,6 +68,11 @@ public class QueryRewriter {
     }
 
     public QueryRewriteResult rewrite(String userMessage, String historyContext) {
+        return rewrite(userMessage, historyContext, null, "query-rewrite");
+    }
+
+    public QueryRewriteResult rewrite(String userMessage, String historyContext,
+                                      AgentRunContext context, String nodeName) {
         if (!enabled || userMessage == null || userMessage.isBlank()) {
             return new QueryRewriteResult(
                     userMessage != null ? userMessage : "", userMessage, List.of());
@@ -86,13 +94,20 @@ public class QueryRewriter {
 
         try {
             String prompt = buildRewritePrompt(userMessage, historyContext);
-            ProviderChatRequest request = new ProviderChatRequest(rewriteModel, List.of(
-                    new ProviderChatMessage("system", REWRITE_SYSTEM_PROMPT),
-                    new ProviderChatMessage("user", prompt)
-            ));
-
-            ProviderChatResponse response = modelProviderRouter.chatWithFailover(request);
-            QueryRewriteResult result = parseResult(userMessage, response.content());
+            int estimatedPrompt = AgentRunContext.estimateTokens(REWRITE_SYSTEM_PROMPT + prompt);
+            QueryRewriteResult result;
+            try (TokenBudget.Reservation reservation = context == null ? null
+                    : context.reserve(nodeName, estimatedPrompt, 384, false)) {
+                ProviderChatRequest request = new ProviderChatRequest(rewriteModel, List.of(
+                        new ProviderChatMessage("system", REWRITE_SYSTEM_PROMPT),
+                        new ProviderChatMessage("user", prompt)
+                ));
+                ProviderChatResponse response = modelProviderRouter.chatWithFailover(request);
+                if (context != null) {
+                    context.commit(nodeName, reservation, response);
+                }
+                result = parseResult(userMessage, response.content());
+            }
             log.info("[Rewrite] '{}' -> rewritten='{}' subQ={}",
                     userMessage, result.rewritten(), result.subQuestions());
 
@@ -102,7 +117,10 @@ public class QueryRewriter {
             }
             return result;
 
+        } catch (TokenBudgetExceededException e) {
+            throw e;
         } catch (Exception e) {
+            if (context != null) context.recordFailure(nodeName);
             log.warn("[Rewrite] failed, fallback to original: {}", e.getMessage());
             return new QueryRewriteResult(userMessage, userMessage, List.of());
         }

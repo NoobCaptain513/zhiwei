@@ -2,6 +2,9 @@ package com.zihan.zhiwei.ai.rag.agentic;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zihan.zhiwei.ai.agent.runtime.AgentRunContext;
+import com.zihan.zhiwei.ai.agent.runtime.TokenBudget;
+import com.zihan.zhiwei.ai.agent.runtime.TokenBudgetExceededException;
 import com.zihan.zhiwei.ai.provider.ModelProviderRouter;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatMessage;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatRequest;
@@ -62,11 +65,12 @@ public class GroundedAnswerGenerator implements AnswerGenerator {
             return abstain(state);
         }
 
-        FailoverResult generation = generate(state, accepted, null);
+        FailoverResult generation = generate(state, accepted, null, "answer.generate");
         String answer = generation.response().content();
         if (!citationsAreValid(answer, accepted.keySet()) || !verify(state, answer, accepted)) {
             generation = generate(state, accepted,
-                    "上一版答案存在无证据声明或非法引用。请删除不受支持内容并重新生成。\n上一版：" + answer);
+                    "上一版答案存在无证据声明或非法引用。请删除不受支持内容并重新生成。\n上一版：" + answer,
+                    "answer.repair");
             answer = generation.response().content();
             if (!citationsAreValid(answer, accepted.keySet()) || !verify(state, answer, accepted)) {
                 log.warn("[AgenticRAG] answer failed grounding verification after repair");
@@ -82,10 +86,14 @@ public class GroundedAnswerGenerator implements AnswerGenerator {
                         hit.chunk().sourceId(), hit.chunk().title(), hit.finalScore()))
                 .toList();
         var response = generation.response();
+        AgentRunContext context = state.getRequest().runContext();
+        int promptTokens = context == null ? response.promptTokens() : context.promptTokens();
+        int completionTokens = context == null ? response.completionTokens() : context.completionTokens();
+        int totalTokens = context == null ? response.totalTokens() : context.totalTokens();
         return new AgenticRagResult(true, answer, citations, state.getRounds().size(),
                 true, !state.getLatestGrade().conflicts().isEmpty(), "ANSWERED",
-                response.provider(), response.model(), response.promptTokens(),
-                response.completionTokens(), response.totalTokens(), generation.degraded(),
+                response.provider(), response.model(), promptTokens,
+                completionTokens, totalTokens, generation.degraded(),
                 generation.latencyMs() + retrievalLatency(state));
     }
 
@@ -100,12 +108,16 @@ public class GroundedAnswerGenerator implements AnswerGenerator {
         }
         boolean conflicts = state.getLatestGrade() != null
                 && !state.getLatestGrade().conflicts().isEmpty();
+        AgentRunContext context = state.getRequest().runContext();
         return new AgenticRagResult(true, answer, List.of(), state.getRounds().size(),
                 false, conflicts, "INSUFFICIENT_EVIDENCE", "system", "none",
-                0, 0, 0, false, retrievalLatency(state));
+                context == null ? 0 : context.promptTokens(),
+                context == null ? 0 : context.completionTokens(),
+                context == null ? 0 : context.totalTokens(), false, retrievalLatency(state));
     }
 
-    private FailoverResult generate(RagState state, Map<Long, RagHit> accepted, String repairInstruction) {
+    private FailoverResult generate(RagState state, Map<Long, RagHit> accepted,
+                                    String repairInstruction, String nodeName) {
         String model = state.getRequest().model() == null || state.getRequest().model().isBlank()
                 ? defaultModel : state.getRequest().model();
         StringBuilder user = new StringBuilder("原问题：")
@@ -114,24 +126,49 @@ public class GroundedAnswerGenerator implements AnswerGenerator {
             user.append(repairInstruction).append('\n');
         }
         user.append(evidenceBlock(accepted));
-        return router.executeWithFailover(state.getRequest().preferredProvider(),
-                new ProviderChatRequest(model, List.of(
-                        new ProviderChatMessage("system", ANSWER_SYSTEM_PROMPT),
-                        new ProviderChatMessage("user", user.toString()))));
+        AgentRunContext context = state.getRequest().runContext();
+        int estimatedPrompt = AgentRunContext.estimateTokens(ANSWER_SYSTEM_PROMPT + user);
+        try (TokenBudget.Reservation reservation = context == null ? null
+                : context.reserve(nodeName, estimatedPrompt, 1_200, true)) {
+            FailoverResult result = router.executeWithFailover(state.getRequest().preferredProvider(),
+                    new ProviderChatRequest(model, List.of(
+                            new ProviderChatMessage("system", ANSWER_SYSTEM_PROMPT),
+                            new ProviderChatMessage("user", user.toString()))));
+            if (context != null) {
+                context.commit(nodeName, reservation, result.response());
+            }
+            return result;
+        } catch (TokenBudgetExceededException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            if (context != null) context.recordFailure(nodeName);
+            throw e;
+        }
     }
 
     private boolean verify(RagState state, String answer, Map<Long, RagHit> accepted) {
+        AgentRunContext context = state.getRequest().runContext();
         try {
             String model = state.getRequest().model() == null || state.getRequest().model().isBlank()
                     ? defaultModel : state.getRequest().model();
             String prompt = "原问题：" + state.getRequest().query()
                     + "\n待验证答案：" + answer + "\n" + evidenceBlock(accepted);
-            var response = router.chatWithFailover(new ProviderChatRequest(model, List.of(
-                    new ProviderChatMessage("system", VERIFY_SYSTEM_PROMPT),
-                    new ProviderChatMessage("user", prompt))));
-            JsonNode root = objectMapper.readTree(extractJson(response.content()));
-            return root.path("fullySupported").asBoolean(false);
+            int estimatedPrompt = AgentRunContext.estimateTokens(VERIFY_SYSTEM_PROMPT + prompt);
+            try (TokenBudget.Reservation reservation = context == null ? null
+                    : context.reserve("answer.verify", estimatedPrompt, 256, true)) {
+                var response = router.chatWithFailover(new ProviderChatRequest(model, List.of(
+                        new ProviderChatMessage("system", VERIFY_SYSTEM_PROMPT),
+                        new ProviderChatMessage("user", prompt))));
+                if (context != null) {
+                    context.commit("answer.verify", reservation, response);
+                }
+                JsonNode root = objectMapper.readTree(extractJson(response.content()));
+                return root.path("fullySupported").asBoolean(false);
+            }
+        } catch (TokenBudgetExceededException e) {
+            throw e;
         } catch (Exception e) {
+            if (context != null) context.recordFailure("answer.verify");
             log.warn("[AgenticRAG] answer verification failed: {}", e.getMessage());
             return false;
         }

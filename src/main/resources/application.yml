@@ -56,6 +56,12 @@ mybatis-plus:
       logic-delete-value: 1
       logic-not-delete-value: 0
 
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+
 # FIX-10: MQ 重试配置（必须配！否则毒消息 requeue 死循环）
 
 
@@ -103,6 +109,17 @@ zhiwei:
     idempotency:
       # 幂等键缓存 TTL：客户端重试携带同一 Idempotency-Key 时，命中缓存直接返回首次结果，避免重复扣费
       ttl-hours: 24
+    agent:
+      reliability:
+        max-total-tokens: ${AGENT_MAX_TOTAL_TOKENS:12000}
+        reserved-answer-tokens: ${AGENT_RESERVED_ANSWER_TOKENS:1500}
+        max-node-calls: ${AGENT_MAX_NODE_CALLS:12}
+        max-duration-ms: ${AGENT_MAX_DURATION_MS:30000}
+        tool:
+          timeout-ms: ${AGENT_TOOL_TIMEOUT_MS:3000}
+          read-only-retries: ${AGENT_TOOL_READ_ONLY_RETRIES:1}
+          bulkhead-size: ${AGENT_TOOL_BULKHEAD_SIZE:8}
+          approval-ttl-seconds: ${AGENT_TOOL_APPROVAL_TTL_SECONDS:300}
   security:
     api-key-enabled: false
     api-keys: ${ZHIWEI_API_KEYS:}
