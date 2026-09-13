@@ -13,8 +13,8 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root123}
       MYSQL_DATABASE: zhiwei
-      MYSQL_USER: zhiwei
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-zhiwei123}
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-123456}
       TZ: Asia/Shanghai
     ports:
       - "3306:3306"
@@ -36,8 +36,8 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_DB: zhiwei_rag
-      POSTGRES_USER: ${POSTGRES_USER:-zhiwei}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-zhiwei123}
+      POSTGRES_USER: ${POSTGRES_USER:-root}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-123456}
       TZ: Asia/Shanghai
     ports:
       - "5432:5432"
@@ -81,8 +81,8 @@ services:
     container_name: zhiwei-rabbitmq
     restart: unless-stopped
     environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-zhiwei}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-zhiwei123}
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-admin}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-123456}
     ports:
       - "5672:5672"
       - "15672:15672"
@@ -140,13 +140,13 @@ services:
     environment:
       SPRING_PROFILES_ACTIVE: docker
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?请先设置 DASHSCOPE_API_KEY}
-      MYSQL_USER: zhiwei
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-zhiwei123}
-      POSTGRES_USER: ${POSTGRES_USER:-zhiwei}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-zhiwei123}
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-123456}
+      POSTGRES_USER: ${POSTGRES_USER:-root}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-123456}
       REDIS_PASSWORD: ${REDIS_PASSWORD:-zhiwei123}
-      RABBITMQ_USER: ${RABBITMQ_USER:-zhiwei}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-zhiwei123}
+      RABBITMQ_USER: ${RABBITMQ_USER:-admin}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-123456}
       ZHIWEI_API_KEYS: ${ZHIWEI_API_KEYS:?请先设置 ZHIWEI_API_KEYS}
       TZ: Asia/Shanghai
     depends_on:
@@ -175,13 +175,13 @@ services:
     environment:
       SPRING_PROFILES_ACTIVE: mcp,docker
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?请先设置 DASHSCOPE_API_KEY}
-      MYSQL_USER: zhiwei
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-zhiwei123}
-      POSTGRES_USER: ${POSTGRES_USER:-zhiwei}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-zhiwei123}
-      REDIS_PASSWORD: ${REDIS_PASSWORD:-zhiwei123}
-      RABBITMQ_USER: ${RABBITMQ_USER:-zhiwei}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-zhiwei123}
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-123456}
+      POSTGRES_USER: ${POSTGRES_USER:-root}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-123456}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-123456}
+      RABBITMQ_USER: ${RABBITMQ_USER:-admin}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-123456}
       ZHIWEI_API_KEYS: ${ZHIWEI_API_KEYS:?请先设置 ZHIWEI_API_KEYS}
       SERVER_PORT: 8081
       TZ: Asia/Shanghai
