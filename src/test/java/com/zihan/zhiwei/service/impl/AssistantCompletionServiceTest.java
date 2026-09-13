@@ -1,5 +1,7 @@
 package com.zihan.zhiwei.service.impl;
 
+import com.zihan.zhiwei.ai.memory.ConversationTurnCompletedEvent;
+import com.zihan.zhiwei.ai.memory.ConversationTurnCompletedPublisher;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatResponse;
 import com.zihan.zhiwei.ai.usage.UsageRecorder;
 import com.zihan.zhiwei.pojo.entity.Message;
@@ -40,6 +42,24 @@ class AssistantCompletionServiceTest {
 
         assertThat(result.getId()).isEqualTo(42L);
         verify(usage).record(1L, 42L, response, "chat", 12L, true);
+    }
+
+    @Test
+    @DisplayName("权威流式完成路径只登记一次事务后事件")
+    void registersOnePostCommitEventForCompletedTurn() {
+        ConversationService conversations = mock(ConversationService.class);
+        UsageRecorder usage = mock(UsageRecorder.class);
+        ConversationTurnCompletedPublisher publisher = mock(ConversationTurnCompletedPublisher.class);
+        AssistantCompletionService service = new AssistantCompletionService(conversations, usage);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "turnCompletedPublisher", publisher);
+        Message saved = new Message();
+        saved.setId(42L);
+        when(conversations.saveMessage(1L, "assistant", "done")).thenReturn(saved);
+        ProviderChatResponse response = new ProviderChatResponse("done", "m", "p", 2, 3, 5);
+
+        service.saveCompletion("u1", 1L, 41L, "done", response, "chat", 12L, true);
+
+        verify(publisher).publishAfterCommit(new ConversationTurnCompletedEvent("u1", 1L, 41L, 42L));
     }
 
     @Test

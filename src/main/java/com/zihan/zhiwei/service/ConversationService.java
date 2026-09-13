@@ -14,6 +14,12 @@ public interface ConversationService {
      * 查询会话下的消息历史
      */
     List<Message> listMessages(Long conversationId);
+
+    /**
+     * Owner-scoped read of messages strictly after the supplied message ID.
+     */
+    List<Message> listMessagesAfter(String userId, Long conversationId, Long afterMessageId, int limit);
+
     /**
      * 保存一条消息
      */

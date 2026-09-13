@@ -2,17 +2,26 @@ package com.zihan.zhiwei.service.impl;
 
 import com.zihan.zhiwei.ai.intent.AgentIntent;
 import com.zihan.zhiwei.ai.intent.AgentIntentAnalyzer;
+import com.zihan.zhiwei.ai.memory.ConversationTurnCompletedEvent;
+import com.zihan.zhiwei.ai.memory.ConversationTurnCompletedPublisher;
+import com.zihan.zhiwei.ai.memory.MemoryContext;
+import com.zihan.zhiwei.ai.memory.MemoryContextRenderer;
+import com.zihan.zhiwei.ai.memory.MemoryContextService;
+import com.zihan.zhiwei.ai.memory.MemoryProperties;
 import com.zihan.zhiwei.ai.prompt.AiPromptService;
 import com.zihan.zhiwei.ai.provider.ModelProviderRouter;
+import com.zihan.zhiwei.ai.provider.dto.ProviderChatRequest;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatResponse;
 import com.zihan.zhiwei.ai.provider.failover.FailoverResult;
 import com.zihan.zhiwei.ai.rag.RagContextBuilder;
 import com.zihan.zhiwei.ai.rag.RagMessageAugmentor;
 import com.zihan.zhiwei.ai.rag.agentic.AgenticRagOrchestrator;
+import com.zihan.zhiwei.ai.rag.agentic.model.AgenticRagRequest;
 import com.zihan.zhiwei.ai.rag.agentic.model.AgenticRagResult;
 import com.zihan.zhiwei.ai.rag.agentic.model.Citation;
 import com.zihan.zhiwei.ai.reply.*;
 import com.zihan.zhiwei.ai.safety.SpringAiSafetyAdvisor;
+import com.zihan.zhiwei.ai.stream.StreamResult;
 import com.zihan.zhiwei.ai.tool.OpsAgentToolService;
 import com.zihan.zhiwei.ai.tool.ToolCallResult;
 import com.zihan.zhiwei.ai.tool.ToolResultCollector;
@@ -29,6 +38,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.*;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
@@ -39,6 +50,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
@@ -64,6 +76,8 @@ class AgentServiceImplTest {
     @Mock private ObjectProvider<ToolResultCollector> toolResultCollectorProvider;
     @Mock private AssistantCompletionService assistantCompletionService;
     @Mock private AgenticRagOrchestrator agenticRagOrchestrator;
+    @Mock private MemoryContextService memoryContextService;
+    @Mock private MemoryContextRenderer memoryContextRenderer;
 
     private ToolResultCollector toolResultCollector = new ToolResultCollector();
     private AgentReplyService replyService;
@@ -109,6 +123,102 @@ class AgentServiceImplTest {
     @Nested
     @DisplayName("全链路 Agent")
     class FullPipelineTests {
+
+        @Test
+        @DisplayName("记忆开启时同步与流式复用统一上下文且当前消息只发送一次")
+        void shouldUseSameMemoryContextForSyncAndStreamWithoutDuplicatingCurrentMessage() {
+            String current = "Redis MOVED 怎么处理";
+            setupCommonMocks(AgentIntent.RAG, current);
+            ConversationTurnCompletedPublisher publisher = mock(ConversationTurnCompletedPublisher.class);
+            ReflectionTestUtils.setField(service, "turnCompletedPublisher", publisher);
+            enableMemoryInjection();
+            ReflectionTestUtils.setField(service, "agenticRagEnabled", true);
+            ReflectionTestUtils.setField(service, "agenticRagOrchestrator", agenticRagOrchestrator);
+
+            Message prior = message(7L, "assistant", "prior answer");
+            MemoryContext context = new MemoryContext(current, Optional.empty(), Optional.empty(),
+                    List.of(), List.of(prior), 20, 12000);
+            when(memoryContextService.buildContext("u1", 1L, current, 12000)).thenReturn(context);
+            when(memoryContextRenderer.renderSystemBlock(context)).thenReturn("MEMORY BLOCK");
+            when(memoryContextRenderer.renderAgenticHistory(context)).thenReturn("MEMORY HISTORY");
+            when(agenticRagOrchestrator.execute(any())).thenReturn(AgenticRagResult.notRequired());
+            when(modelProviderRouter.streamChatWithFailover(any(), any())).thenAnswer(invocation -> {
+                @SuppressWarnings("unchecked")
+                java.util.function.Consumer<String> consumer = invocation.getArgument(1);
+                consumer.accept("模型回复...");
+                return new StreamResult("qwen-plus", "spring-ai-alibaba", 100, 50, 150);
+            });
+            when(assistantCompletionService.saveCompletion(anyString(), anyLong(), anyLong(),
+                    anyString(), any(), eq("agent"), anyLong(), eq(false)))
+                    .thenReturn(buildMsg(1001L, "saved"));
+
+            service.agent(new AgentRequest("u1", null, current, null, false, null, null));
+            service.streamAgent(new AgentRequest("u1", null, current, null, false, null, null),
+                    ignored -> { }, ignored -> { });
+
+            verify(publisher, times(1)).publishAfterCommit(
+                    new ConversationTurnCompletedEvent("u1", 1L, 998L, 999L));
+            verify(assistantCompletionService, times(1)).saveCompletion(
+                    eq("u1"), eq(1L), eq(998L), anyString(), any(),
+                    eq("agent"), anyLong(), eq(false));
+
+            ArgumentCaptor<ProviderChatRequest> syncRequest = ArgumentCaptor.forClass(ProviderChatRequest.class);
+            verify(modelProviderRouter).executeWithFailover(syncRequest.capture());
+            ArgumentCaptor<ProviderChatRequest> streamRequest = ArgumentCaptor.forClass(ProviderChatRequest.class);
+            verify(modelProviderRouter).streamChatWithFailover(streamRequest.capture(), any());
+            assertThat(syncRequest.getValue().messages()).isEqualTo(streamRequest.getValue().messages());
+            assertThat(syncRequest.getValue().messages()).extracting(message -> message.content())
+                    .anySatisfy(content -> assertThat(content).contains("MEMORY BLOCK"));
+            assertThat(syncRequest.getValue().messages())
+                    .filteredOn(message -> "user".equals(message.role()) && current.equals(message.content()))
+                    .hasSize(1);
+
+            ArgumentCaptor<AgenticRagRequest> ragRequests = ArgumentCaptor.forClass(AgenticRagRequest.class);
+            verify(agenticRagOrchestrator, times(2)).execute(ragRequests.capture());
+            assertThat(ragRequests.getAllValues()).extracting(AgenticRagRequest::historyContext)
+                    .containsOnly("MEMORY HISTORY");
+            verify(memoryContextService, times(2)).buildContext("u1", 1L, current, 12000);
+            verify(memoryContextRenderer, times(2)).renderSystemBlock(context);
+            verify(memoryContextRenderer, times(2)).renderAgenticHistory(context);
+            verify(conversationService, never()).listMessages(1L);
+        }
+
+        @ParameterizedTest
+        @CsvSource({"false,true", "true,false"})
+        @DisplayName("任一记忆开关关闭时保留最后20条 provider 与最后6条 Agentic 历史")
+        void shouldKeepLegacyHistoryWhenMemoryInjectionIsDisabled(boolean enabled, boolean injectEnabled) {
+            String current = "current question";
+            setupCommonMocks(AgentIntent.RAG, current);
+            MemoryProperties properties = new MemoryProperties();
+            properties.setEnabled(enabled);
+            properties.setInjectEnabled(injectEnabled);
+            ReflectionTestUtils.setField(service, "memoryProperties", properties);
+            ReflectionTestUtils.setField(service, "memoryContextService", memoryContextService);
+            ReflectionTestUtils.setField(service, "memoryContextRenderer", memoryContextRenderer);
+            ReflectionTestUtils.setField(service, "agenticRagEnabled", true);
+            ReflectionTestUtils.setField(service, "agenticRagOrchestrator", agenticRagOrchestrator);
+            List<Message> history = new ArrayList<>();
+            for (int i = 1; i <= 24; i++) {
+                history.add(message((long) i, i % 2 == 0 ? "assistant" : "user", "history-" + i));
+            }
+            history.add(message(25L, "user", current));
+            when(conversationService.listMessages(1L)).thenReturn(history);
+            when(agenticRagOrchestrator.execute(any())).thenReturn(AgenticRagResult.notRequired());
+
+            service.agent(new AgentRequest("u1", null, current, null, false, null, null));
+
+            ArgumentCaptor<ProviderChatRequest> providerRequest = ArgumentCaptor.forClass(ProviderChatRequest.class);
+            verify(modelProviderRouter).executeWithFailover(providerRequest.capture());
+            assertThat(providerRequest.getValue().messages()).hasSize(21);
+            assertThat(providerRequest.getValue().messages().get(1).content()).isEqualTo("history-6");
+            assertThat(providerRequest.getValue().messages().getLast().content()).isEqualTo(current);
+            ArgumentCaptor<AgenticRagRequest> ragRequest = ArgumentCaptor.forClass(AgenticRagRequest.class);
+            verify(agenticRagOrchestrator).execute(ragRequest.capture());
+            assertThat(ragRequest.getValue().historyContext())
+                    .contains("history-20", "history-24", current)
+                    .doesNotContain("history-19");
+            verifyNoInteractions(memoryContextService, memoryContextRenderer);
+        }
 
         @Test
         @DisplayName("fault 意图 → 查服务器状态 + 指标 → 返回 AgentResponse")
@@ -309,8 +419,9 @@ class AgentServiceImplTest {
                     2, true, false, "ANSWERED", "spring-ai-alibaba", "qwen-plus",
                     20, 10, 30, false, 100);
             when(agenticRagOrchestrator.execute(any())).thenReturn(grounded);
-            when(assistantCompletionService.saveCompletion(anyLong(), anyString(), any(),
-                    eq("agent"), anyLong(), eq(false))).thenReturn(buildMsg(1000L, "saved"));
+            when(assistantCompletionService.saveCompletion(anyString(), anyLong(), anyLong(),
+                    anyString(), any(), eq("agent"), anyLong(), eq(false)))
+                    .thenReturn(buildMsg(1000L, "saved"));
             List<String> tokens = new ArrayList<>();
             List<String> cards = new ArrayList<>();
 
@@ -386,7 +497,8 @@ class AgentServiceImplTest {
     private void setupCommonMocks(String intentName, String message) {
         Conversation conv = buildConv();
         when(conversationService.getOrCreate("u1", null)).thenReturn(conv);
-        when(conversationService.saveMessage(anyLong(), eq("user"), anyString())).thenReturn(new Message());
+        when(conversationService.saveMessage(anyLong(), eq("user"), anyString()))
+                .thenReturn(buildMsg(998L, message));
         when(conversationService.listMessages(1L)).thenReturn(List.of());
 
         when(intentAnalyzer.analyze(anyString())).thenReturn(
@@ -410,6 +522,24 @@ class AgentServiceImplTest {
                 new FailoverResult(providerResp, "spring-ai-alibaba", "spring-ai-alibaba", false, 100L, List.of()));
         when(conversationService.saveMessage(eq(1L), eq("assistant"), anyString()))
                 .thenAnswer(inv -> buildMsg(999L, inv.getArgument(2)));
+    }
+
+    private void enableMemoryInjection() {
+        MemoryProperties properties = new MemoryProperties();
+        properties.setEnabled(true);
+        properties.setInjectEnabled(true);
+        ReflectionTestUtils.setField(service, "memoryProperties", properties);
+        ReflectionTestUtils.setField(service, "memoryContextService", memoryContextService);
+        ReflectionTestUtils.setField(service, "memoryContextRenderer", memoryContextRenderer);
+    }
+
+    private static Message message(Long id, String role, String content) {
+        Message message = new Message();
+        message.setId(id);
+        message.setConversationId(1L);
+        message.setRole(role);
+        message.setContent(content);
+        return message;
     }
 
     private static Conversation buildConv() {

@@ -9,6 +9,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.validation.BindException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
@@ -30,6 +31,30 @@ import java.util.stream.Collectors;
 @Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    @ExceptionHandler(MemoryVersionConflictException.class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    public Result<Void> handleMemoryVersionConflict(MemoryVersionConflictException ex) {
+        return Result.fail(HttpStatus.CONFLICT.value(), ex.getMessage());
+    }
+
+    @ExceptionHandler(PreconditionRequiredException.class)
+    @ResponseStatus(HttpStatus.PRECONDITION_REQUIRED)
+    public Result<Void> handlePreconditionRequired(PreconditionRequiredException ex) {
+        return Result.fail(HttpStatus.PRECONDITION_REQUIRED.value(), ex.getMessage());
+    }
+
+    @ExceptionHandler(AccessDeniedException.class)
+    @ResponseStatus(HttpStatus.FORBIDDEN)
+    public Result<Void> handleAccessDenied(AccessDeniedException ex) {
+        return Result.fail(ErrorCode.FORBIDDEN.getCode(), ErrorCode.FORBIDDEN.getMessage());
+    }
+
+    @ExceptionHandler(IllegalArgumentException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public Result<Void> handleIllegalArgument(IllegalArgumentException ex) {
+        return Result.fail(ErrorCode.BAD_REQUEST.getCode(), ex.getMessage());
+    }
 
     @ExceptionHandler(IdempotencyConflictException.class)
     public Result<Void> handleIdempotencyConflict(IdempotencyConflictException ex,

@@ -3,6 +3,12 @@ package com.zihan.zhiwei.service.impl;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zihan.zhiwei.ai.intent.AgentIntent;
 import com.zihan.zhiwei.ai.intent.AgentIntentAnalyzer;
+import com.zihan.zhiwei.ai.memory.ConversationTurnCompletedEvent;
+import com.zihan.zhiwei.ai.memory.ConversationTurnCompletedPublisher;
+import com.zihan.zhiwei.ai.memory.MemoryContext;
+import com.zihan.zhiwei.ai.memory.MemoryContextRenderer;
+import com.zihan.zhiwei.ai.memory.MemoryContextService;
+import com.zihan.zhiwei.ai.memory.MemoryProperties;
 import com.zihan.zhiwei.ai.prompt.AiPromptService;
 import com.zihan.zhiwei.ai.provider.ModelProviderRouter;
 import com.zihan.zhiwei.ai.provider.dto.ProviderChatMessage;
@@ -60,6 +66,8 @@ import java.util.function.Consumer;
 @RequiredArgsConstructor
 public class AgentServiceImpl implements AgentService {
 
+    private static final int MEMORY_CONTEXT_TOKEN_BUDGET = 12_000;
+
     private final ConversationService conversationService;
     private final ModelProviderRouter modelProviderRouter;
     private final UsageRecorder usageRecorder;
@@ -89,7 +97,17 @@ public class AgentServiceImpl implements AgentService {
     private final AssistantCompletionService assistantCompletionService;
 
     @Autowired(required = false)
+    private ConversationTurnCompletedPublisher turnCompletedPublisher;
+
+    @Autowired(required = false)
     private AgenticRagOrchestrator agenticRagOrchestrator;
+
+    @Autowired(required = false)
+    private MemoryContextService memoryContextService;
+    @Autowired(required = false)
+    private MemoryContextRenderer memoryContextRenderer;
+    @Autowired(required = false)
+    private MemoryProperties memoryProperties;
 
     @Value("${zhiwei.ai.rag.agentic.enabled:false}")
     private boolean agenticRagEnabled;
@@ -141,9 +159,9 @@ public class AgentServiceImpl implements AgentService {
 
         Conversation conversation = conversationService.getOrCreate(
                 request.userId(), request.conversationId());
-        conversationService.saveMessage(conversation.getId(), "user", request.message());
+        Message userMessage = conversationService.saveMessage(conversation.getId(), "user", request.message());
 
-        List<Message> history = conversationService.listMessages(conversation.getId());
+        AgentConversationContext conversationContext = buildConversationContext(request, conversation.getId());
 
         AgentIntent intent = intentAnalyzer.analyze(request.message());
         String primaryIntent = intent.getPrimary();
@@ -154,8 +172,8 @@ public class AgentServiceImpl implements AgentService {
         AgentReply clarifyReply = clarificationService.buildClarifyReply(intent);
         if (clarifyReply != null) {
             String encoded = replyService.encode(clarifyReply);
-            Message assistantMessage = conversationService.saveMessage(
-                    conversation.getId(), "assistant", encoded);
+            Message assistantMessage = saveSynchronousCompletion(
+                    request.userId(), conversation.getId(), userMessage, encoded);
             log.info("[Agent] clarify userId={} options={}",
                     request.userId(),
                     clarifyReply.getCards() == null ? 0 : clarifyReply.getCards().size());
@@ -175,14 +193,14 @@ public class AgentServiceImpl implements AgentService {
         }
 
         AgenticRagResult agenticRag = executeAgenticRag(
-                primaryIntent, request, buildAgenticHistory(history));
+                primaryIntent, request, conversationContext.agenticHistory());
         if (agenticRag != null && agenticRag.ragRequired()) {
             List<AgentReply.Card> citationCards = buildCitationCards(agenticRag.citations());
             AgentReply groundedReply = replyService.buildFallbackReply(
                     agenticRag.answer(), primaryIntent, citationCards, List.of());
             String encoded = replyService.encode(groundedReply);
-            Message assistantMessage = conversationService.saveMessage(
-                    conversation.getId(), "assistant", encoded);
+            Message assistantMessage = saveSynchronousCompletion(
+                    request.userId(), conversation.getId(), userMessage, encoded);
             if (agenticRag.totalTokens() > 0) {
                 usageRecorder.record(conversation.getId(), assistantMessage.getId(),
                         toProviderResponse(agenticRag), "agent",
@@ -215,7 +233,7 @@ public class AgentServiceImpl implements AgentService {
         }
 
         List<ProviderChatMessage> providerMessages = buildMessages(
-                systemPrompt, history, toolResultCollector.toContextBlock(), request.message(),
+                systemPrompt, conversationContext, toolResultCollector.toContextBlock(),
                 request.preferredProvider(), agenticRag == null);
 
         long agentStart = System.currentTimeMillis();
@@ -244,8 +262,8 @@ public class AgentServiceImpl implements AgentService {
         }
 
         String encodedContent = replyService.encode(reply);
-        Message assistantMessage = conversationService.saveMessage(
-                conversation.getId(), "assistant", encodedContent);
+        Message assistantMessage = saveSynchronousCompletion(
+                request.userId(), conversation.getId(), userMessage, encodedContent);
 
         usageRecorder.record(
                 conversation.getId(),
@@ -345,9 +363,9 @@ public class AgentServiceImpl implements AgentService {
 
         Conversation conversation = conversationService.getOrCreate(
                 request.userId(), request.conversationId());
-        conversationService.saveMessage(conversation.getId(), "user", request.message());
+        Message userMessage = conversationService.saveMessage(conversation.getId(), "user", request.message());
 
-        List<Message> history = conversationService.listMessages(conversation.getId());
+        AgentConversationContext conversationContext = buildConversationContext(request, conversation.getId());
 
         AgentIntent intent = intentAnalyzer.analyze(request.message());
         String primaryIntent = intent.getPrimary();
@@ -369,8 +387,8 @@ public class AgentServiceImpl implements AgentService {
                 }
             }
             String encoded = replyService.encode(clarifyReply);
-            Message assistantMessage = conversationService.saveMessage(
-                    conversation.getId(), "assistant", encoded);
+            Message assistantMessage = assistantCompletionService.saveCompletion(
+                    request.userId(), conversation.getId(), userMessage.getId(), encoded);
             AgentStreamResult clarificationResult = AgentStreamResult.builder()
                     .conversationId(conversation.getId())
                     .messageId(assistantMessage.getId())
@@ -387,7 +405,7 @@ public class AgentServiceImpl implements AgentService {
         }
 
         AgenticRagResult agenticRag = executeAgenticRag(
-                primaryIntent, request, buildAgenticHistory(history));
+                primaryIntent, request, conversationContext.agenticHistory());
         if (agenticRag != null && agenticRag.ragRequired()) {
             List<AgentReply.Card> citationCards = buildCitationCards(agenticRag.citations());
             onToken.accept(agenticRag.answer());
@@ -402,7 +420,8 @@ public class AgentServiceImpl implements AgentService {
                     agenticRag.answer(), primaryIntent, citationCards, List.of());
             ProviderChatResponse providerResponse = toProviderResponse(agenticRag);
             Message assistantMessage = assistantCompletionService.saveCompletion(
-                    conversation.getId(), replyService.encode(groundedReply), providerResponse,
+                    request.userId(), conversation.getId(), userMessage.getId(),
+                    replyService.encode(groundedReply), providerResponse,
                     "agent", agenticRag.latencyMs(), agenticRag.degraded());
             AgentStreamResult groundedResult = AgentStreamResult.builder()
                     .conversationId(conversation.getId())
@@ -431,7 +450,7 @@ public class AgentServiceImpl implements AgentService {
         }
 
         List<ProviderChatMessage> providerMessages = buildMessages(
-                systemPrompt, history, toolResultCollector.toContextBlock(), request.message(),
+                systemPrompt, conversationContext, toolResultCollector.toContextBlock(),
                 request.preferredProvider(), agenticRag == null);
 
         StringBuilder fullContent = new StringBuilder();
@@ -481,7 +500,8 @@ public class AgentServiceImpl implements AgentService {
                 streamResult.promptTokens(), streamResult.completionTokens(), streamResult.totalTokens());
 
         Message assistantMessage = assistantCompletionService.saveCompletion(
-                conversation.getId(), encodedContent, providerResponse, "agent",
+                request.userId(), conversation.getId(), userMessage.getId(),
+                encodedContent, providerResponse, "agent",
                 System.currentTimeMillis() - agentStreamStart, false);
 
         log.info("[StreamAgent] done intent={} provider={} cards={} tokens={}",
@@ -511,9 +531,43 @@ public class AgentServiceImpl implements AgentService {
 
     // ==================== 私有方法 ====================
 
+    private Message saveSynchronousCompletion(String userId, long conversationId,
+                                               Message userMessage, String content) {
+        Message assistant = conversationService.saveMessage(conversationId, "assistant", content);
+        if (turnCompletedPublisher != null) {
+            turnCompletedPublisher.publishAfterCommit(new ConversationTurnCompletedEvent(
+                    userId, conversationId, userMessage.getId(), assistant.getId()));
+        }
+        return assistant;
+    }
+
     /** 全部 Provider 失败时没有实际命中的 Provider，用首选名兜底，缺省记为 none */
     private static String failedProviderName(String preferred) {
         return preferred != null && !preferred.isBlank() ? preferred : "none";
+    }
+
+    private AgentConversationContext buildConversationContext(AgentRequest request, long conversationId) {
+        if (!isMemoryInjectionEnabled()) {
+            List<Message> history = conversationService.listMessages(conversationId);
+            return new AgentConversationContext(history, "", buildAgenticHistory(history), request.message(), false);
+        }
+
+        MemoryContext context = memoryContextService.buildContext(
+                request.userId(), conversationId, request.message(), MEMORY_CONTEXT_TOKEN_BUDGET);
+        return new AgentConversationContext(
+                List.of(),
+                memoryContextRenderer.renderSystemBlock(context),
+                memoryContextRenderer.renderAgenticHistory(context),
+                context.currentUserMessage(),
+                true);
+    }
+
+    private boolean isMemoryInjectionEnabled() {
+        return memoryProperties != null
+                && memoryProperties.isEnabled()
+                && memoryProperties.isInjectEnabled()
+                && memoryContextService != null
+                && memoryContextRenderer != null;
     }
 
     private AgenticRagResult executeAgenticRag(
@@ -523,7 +577,8 @@ public class AgentServiceImpl implements AgentService {
             return null;
         }
         return agenticRagOrchestrator.execute(new AgenticRagRequest(
-                request.message(), historyContext, request.preferredProvider(), request.model()));
+                request.message(), historyContext, request.preferredProvider(), request.model(),
+                request.userId(), request.conversationId()));
     }
 
     private String buildAgenticHistory(List<Message> history) {
@@ -623,24 +678,41 @@ public class AgentServiceImpl implements AgentService {
     }
 
     private List<ProviderChatMessage> buildMessages(
-            String systemPrompt, List<Message> history,
-            String toolContext, String userMessage, String preferredProvider,
+            String systemPrompt, AgentConversationContext conversationContext,
+            String toolContext, String preferredProvider,
             boolean applyLegacyRag) {
         List<ProviderChatMessage> messages = new ArrayList<>();
         StringBuilder fullSystem = new StringBuilder(systemPrompt);
+        if (conversationContext.memorySystemBlock() != null
+                && !conversationContext.memorySystemBlock().isBlank()) {
+            fullSystem.append("\n\n").append(conversationContext.memorySystemBlock());
+        }
         if (toolContext != null && !toolContext.isBlank()) {
             fullSystem.append("\n\n").append(toolContext);
         }
         messages.add(new ProviderChatMessage("system", fullSystem.toString()));
-        int start = Math.max(0, history.size() - 20);
-        for (int i = start; i < history.size(); i++) {
-            Message m = history.get(i);
-            messages.add(new ProviderChatMessage(m.getRole(), m.getContent()));
+        if (conversationContext.memoryInjected()) {
+            messages.add(new ProviderChatMessage("user", conversationContext.currentUserMessage()));
+        } else {
+            List<Message> history = conversationContext.legacyHistory();
+            int start = Math.max(0, history.size() - 20);
+            for (int i = start; i < history.size(); i++) {
+                Message m = history.get(i);
+                messages.add(new ProviderChatMessage(m.getRole(), m.getContent()));
+            }
         }
         if (applyLegacyRag) {
             messages = ragMessageAugmentor.augmentIfEnabled(messages, preferredProvider);
         }
         return messages;
+    }
+
+    private record AgentConversationContext(
+            List<Message> legacyHistory,
+            String memorySystemBlock,
+            String agenticHistory,
+            String currentUserMessage,
+            boolean memoryInjected) {
     }
 
     private String extractHostname(String message) {

@@ -297,6 +297,27 @@ docker compose up -d mysql postgres redis rabbitmq
 `application-docker.yml` 切换为 Compose 服务名。私有的
 `application-dev.yml` 只用于个人覆盖配置，不是启动必需文件。
 
+### 第五阶段：分层记忆
+
+记忆功能默认关闭，启用前先执行 `V4__agent_memory.sql` 迁移并确认用户身份隔离策略：
+
+```bash
+export MEMORY_ENABLED=true
+export MEMORY_INJECT_ENABLED=true
+# 可选：仅生成候选事实，不会自动覆盖已确认事实
+export MEMORY_FACT_EXTRACTION_ENABLED=false
+```
+
+记忆分为三层：
+
+- **短期摘要**：按会话滚动压缩，记录 `coveredThroughMessageId`，只覆盖已处理消息；
+- **Checkpoint**：保存 Agent/RAG 节点、待办、工具结果摘要和恢复状态，禁止写入凭证、完整 prompt 或完整日志；
+- **长期事实**：按 `namespace/subject/predicate/value` 保存。模型抽取结果先是 `PROPOSED`，显式事实修改产生不可变版本，冲突必须裁决后才能替换当前值。
+
+记忆 API 位于 `/api/memories`，包含 summary、checkpoint、facts、versions、conflicts、audit 和 forget。更新/删除需要 `If-Match: "<version>"`；版本冲突返回 HTTP 409，缺少版本返回 HTTP 428。`DELETE` 是保留期内可恢复的逻辑删除，`POST /api/memories/forget` 是清除在线 MySQL、Redis 和事实版本的不可逆任务，结果可通过 `/api/memories/forget/{jobId}` 查询。
+
+摘要维护在对话事务提交后异步执行，Redis 不可用或摘要模型失败不会回滚已经完成的对话。审计只保存资源、版本、操作者、原因和哈希，不保存正文；遗忘完成后不能通过在线审计还原正文。数据库备份、日志平台和死信队列仍按各自保留策略过期，系统不宣称备份即时物理擦除。关闭 `MEMORY_INJECT_ENABLED` 可回退到原有最近消息上下文。
+
 ### 访问
 
 | 地址 | 说明 |

@@ -2,6 +2,7 @@ package com.zihan.zhiwei.service.impl;
 
 import com.zihan.zhiwei.service.ConversationService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.zihan.zhiwei.common.exception.BusinessException;
 import com.zihan.zhiwei.common.exception.ErrorCode;
 import com.zihan.zhiwei.pojo.entity.Conversation;
@@ -48,6 +49,34 @@ public class ConversationServiceImpl implements ConversationService{
                         .orderByAsc(Message::getCreateTime)
         );
     }
+
+    @Override
+    public List<Message> listMessagesAfter(String userId, Long conversationId, Long afterMessageId, int limit) {
+        if (userId == null || userId.isBlank() || conversationId == null || conversationId <= 0) {
+            throw new IllegalArgumentException("userId and conversationId are required");
+        }
+        int safeLimit = Math.min(Math.max(limit, 1), 100);
+        Long cursor = afterMessageId == null ? 0L : Math.max(0L, afterMessageId);
+        Conversation owned = conversationMapper.selectOne(
+                new LambdaQueryWrapper<Conversation>()
+                        .eq(Conversation::getId, conversationId)
+                        .eq(Conversation::getUserId, userId)
+                        .last("LIMIT 1"));
+        if (owned == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND, "会话不存在");
+        }
+        List<Message> messages = messageMapper.selectList(
+                new QueryWrapper<Message>()
+                        .eq("conversation_id", conversationId)
+                        .gt("id", cursor)
+                        .orderByAsc("id")
+                        .last("LIMIT " + safeLimit));
+        return messages.stream()
+                .sorted(java.util.Comparator.comparing(Message::getId))
+                .limit(safeLimit)
+                .toList();
+    }
+
     @Transactional
     public Message saveMessage(Long conversationId, String role, String content) {
         Message message = new Message();

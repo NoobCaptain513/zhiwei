@@ -109,6 +109,18 @@ zhiwei:
     idempotency:
       # 幂等键缓存 TTL：客户端重试携带同一 Idempotency-Key 时，命中缓存直接返回首次结果，避免重复扣费
       ttl-hours: 24
+    memory:
+      enabled: ${MEMORY_ENABLED:false}
+      inject-enabled: ${MEMORY_INJECT_ENABLED:false}
+      fact-extraction-enabled: ${MEMORY_FACT_EXTRACTION_ENABLED:false}
+      fact-limit: 10
+      checkpoint-ttl: 7d
+      soft-delete-retention: 30d
+      checkpoint-max-bytes: 65536
+      summary:
+        message-threshold: 8
+        token-threshold: 3000
+        recent-messages-to-keep: 4
     agent:
       reliability:
         max-total-tokens: ${AGENT_MAX_TOTAL_TOKENS:12000}
