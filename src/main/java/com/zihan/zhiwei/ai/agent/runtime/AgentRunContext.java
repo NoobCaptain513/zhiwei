@@ -13,8 +13,32 @@ public final class AgentRunContext {
     private final AtomicInteger completionTokens = new AtomicInteger();
 
     public AgentRunContext(TokenBudget budget, AgentNodeObserver observer) {
+        this(budget, observer, 0, 0);
+    }
+
+    private AgentRunContext(TokenBudget budget, AgentNodeObserver observer,
+                            int promptTokens, int completionTokens) {
         this.budget = budget;
         this.observer = observer;
+        this.promptTokens.set(Math.max(0, promptTokens));
+        this.completionTokens.set(Math.max(0, completionTokens));
+    }
+
+    public Snapshot snapshot() {
+        return new Snapshot(budget.snapshot(), promptTokens(), completionTokens());
+    }
+
+    public static AgentRunContext restore(Snapshot snapshot, AgentNodeObserver observer) {
+        if (snapshot == null) throw new IllegalArgumentException("run context snapshot is required");
+        return new AgentRunContext(TokenBudget.restore(snapshot.budget()), observer,
+                snapshot.promptTokens(), snapshot.completionTokens());
+    }
+
+    public static AgentRunContext restore(Snapshot snapshot, AgentNodeObserver observer,
+                                          TokenBudget serverPolicy) {
+        if (snapshot == null) throw new IllegalArgumentException("run context snapshot is required");
+        return new AgentRunContext(TokenBudget.restore(snapshot.budget(), serverPolicy), observer,
+                snapshot.promptTokens(), snapshot.completionTokens());
     }
 
     public TokenBudget.Reservation reserve(
@@ -55,4 +79,6 @@ public final class AgentRunContext {
         }
         return nonAscii + (int) Math.ceil(ascii / 4.0);
     }
+
+    public record Snapshot(TokenBudget.Snapshot budget, int promptTokens, int completionTokens) {}
 }

@@ -193,7 +193,7 @@ public class AgentServiceImpl implements AgentService {
         }
 
         AgenticRagResult agenticRag = executeAgenticRag(
-                primaryIntent, request, conversationContext.agenticHistory());
+                primaryIntent, request, conversation.getId(), conversationContext.agenticHistory());
         if (agenticRag != null && agenticRag.ragRequired()) {
             List<AgentReply.Card> citationCards = buildCitationCards(agenticRag.citations());
             AgentReply groundedReply = replyService.buildFallbackReply(
@@ -405,7 +405,7 @@ public class AgentServiceImpl implements AgentService {
         }
 
         AgenticRagResult agenticRag = executeAgenticRag(
-                primaryIntent, request, conversationContext.agenticHistory());
+                primaryIntent, request, conversation.getId(), conversationContext.agenticHistory());
         if (agenticRag != null && agenticRag.ragRequired()) {
             List<AgentReply.Card> citationCards = buildCitationCards(agenticRag.citations());
             onToken.accept(agenticRag.answer());
@@ -571,14 +571,14 @@ public class AgentServiceImpl implements AgentService {
     }
 
     private AgenticRagResult executeAgenticRag(
-            String primaryIntent, AgentRequest request, String historyContext) {
+            String primaryIntent, AgentRequest request, long conversationId, String historyContext) {
         if (!agenticRagEnabled || agenticRagOrchestrator == null
                 || !AgentIntent.RAG.equals(primaryIntent)) {
             return null;
         }
         return agenticRagOrchestrator.execute(new AgenticRagRequest(
                 request.message(), historyContext, request.preferredProvider(), request.model(),
-                request.userId(), request.conversationId()));
+                request.userId(), conversationId));
     }
 
     private String buildAgenticHistory(List<Message> history) {

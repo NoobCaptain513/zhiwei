@@ -177,6 +177,8 @@ class AgentServiceImplTest {
             verify(agenticRagOrchestrator, times(2)).execute(ragRequests.capture());
             assertThat(ragRequests.getAllValues()).extracting(AgenticRagRequest::historyContext)
                     .containsOnly("MEMORY HISTORY");
+            assertThat(ragRequests.getAllValues()).extracting(AgenticRagRequest::conversationId)
+                    .containsOnly(1L);
             verify(memoryContextService, times(2)).buildContext("u1", 1L, current, 12000);
             verify(memoryContextRenderer, times(2)).renderSystemBlock(context);
             verify(memoryContextRenderer, times(2)).renderAgenticHistory(context);

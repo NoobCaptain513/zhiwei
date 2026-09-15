@@ -6,6 +6,8 @@ import com.zihan.zhiwei.ai.memory.model.MemoryAuditEvent;
 import com.zihan.zhiwei.ai.memory.model.MemoryFact;
 import com.zihan.zhiwei.ai.memory.model.MemoryFactVersion;
 import com.zihan.zhiwei.ai.memory.model.MemoryConflict;
+import com.zihan.zhiwei.ai.rag.agentic.AgenticRagOrchestrator;
+import com.zihan.zhiwei.ai.rag.agentic.model.AgenticRagResult;
 import com.zihan.zhiwei.common.Result;
 import com.zihan.zhiwei.common.exception.PreconditionRequiredException;
 import com.zihan.zhiwei.pojo.dto.memory.*;
@@ -15,6 +17,9 @@ import jakarta.validation.constraints.Min;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
@@ -35,6 +40,9 @@ public class MemoryController {
     private final MemoryAuditService audits;
     private final Optional<MemoryForgetService> forget;
     private final MemoryOwnerResolver owners;
+
+    @Autowired(required = false)
+    private AgenticRagOrchestrator agenticRagOrchestrator;
 
     public MemoryController(MemorySummaryService summaries, CheckpointService checkpoints,
                             MemoryFactService facts, MemoryAuditService audits,
@@ -94,6 +102,7 @@ public class MemoryController {
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
             @RequestHeader(value = "X-Request-Id", required = false) String requestId,
             Authentication authentication) {
+        rejectExternallyManagedAgenticCheckpoint(request.checkpointType());
         String owner = owners.resolve(request.userId(), authentication);
         var created = checkpoints.create(new CheckpointService.CreateCommand(owner, request.runId(),
                 request.conversationId(), request.checkpointType(), request.nodeName(), request.state(), request.status(),
@@ -133,7 +142,9 @@ public class MemoryController {
             Authentication authentication) {
         long expected = requiredVersion(ifMatch);
         String owner = owners.resolve(request.userId(), authentication);
-        if (checkpoints.get(owner, id).isEmpty()) return notFound();
+        var existing = checkpoints.get(owner, id);
+        if (existing.isEmpty()) return notFound();
+        rejectExternallyManagedAgenticCheckpoint(existing.get().checkpointType());
         var updated = checkpoints.transition(owner, id, expected, request.status(), request.nodeName(), request.state(),
                 request.errorCode(), request.resumeAfter(), request.actorId(), request.reason(), requestId);
         return versioned(Result.ok(new CheckpointResponse(updated)), updated.version(), HttpStatus.OK);
@@ -147,9 +158,28 @@ public class MemoryController {
             Authentication authentication) {
         long expected = requiredVersion(ifMatch);
         String owner = owners.resolve(request.userId(), authentication);
-        if (checkpoints.get(owner, id).isEmpty()) return notFound();
+        var existing = checkpoints.get(owner, id);
+        if (existing.isEmpty()) return notFound();
+        rejectExternallyManagedAgenticCheckpoint(existing.get().checkpointType());
         var updated = checkpoints.resume(owner, id, expected, request.actorId(), request.reason(), requestId);
         return versioned(Result.ok(new CheckpointResponse(updated)), updated.version(), HttpStatus.OK);
+    }
+
+    @PostMapping("/checkpoints/{id}/resume/agentic-rag")
+    public ResponseEntity<Result<AgenticRagResult>> resumeAgenticRagCheckpoint(
+            @PathVariable long id, @Valid @RequestBody MemoryActionRequest request,
+            @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch,
+            @RequestHeader(value = "X-Request-Id", required = false) String requestId,
+            Authentication authentication) {
+        if (agenticRagOrchestrator == null) {
+            throw new IllegalStateException("Agentic RAG is disabled");
+        }
+        requireAuthenticatedExecution(authentication);
+        long expected = requiredVersion(ifMatch);
+        String owner = owners.resolve(request.userId(), authentication);
+        AgenticRagResult result = agenticRagOrchestrator.resume(
+                owner, id, expected, request.actorId(), request.reason(), requestId);
+        return ResponseEntity.ok(Result.ok(result));
     }
 
     @PostMapping("/checkpoints/{id}/abandon")
@@ -355,6 +385,19 @@ public class MemoryController {
     private static void requireValidLimit(int limit) {
         if (limit < 1 || limit > 100) {
             throw new IllegalArgumentException("limit must be between 1 and 100");
+        }
+    }
+
+    private static void requireAuthenticatedExecution(Authentication authentication) {
+        if (authentication == null || !authentication.isAuthenticated()
+                || authentication instanceof AnonymousAuthenticationToken) {
+            throw new AccessDeniedException("authenticated identity is required for Agentic RAG resume");
+        }
+    }
+
+    private static void rejectExternallyManagedAgenticCheckpoint(AgentCheckpoint.Type type) {
+        if (type == AgentCheckpoint.Type.AGENTIC_RAG) {
+            throw new AccessDeniedException("Agentic RAG checkpoints are managed internally");
         }
     }
 

@@ -1,0 +1,1753 @@
+{
+  "version": "1.0",
+  "dataset": "zhiwei-ops-baseline-v1",
+  "annotation": {
+    "type": "static-manual-curation",
+    "creator": "Hermes Agent",
+    "humanReviewed": false,
+    "guideline": {
+      "3": "直接且充分回答",
+      "2": "重要补充",
+      "1": "边缘相关"
+    },
+    "note": "查询和标签逐项静态编写，未由检索结果反推；上线前应由两名领域人员抽检至少 20%。"
+  },
+  "queries": [
+    {
+      "caseId": "ops-001-1",
+      "category": "direct",
+      "query": "Redis 大量 key 同时过期怎么办？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-redis-avalanche",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《Redis 缓存雪崩处置》"
+    },
+    {
+      "caseId": "ops-001-2",
+      "category": "identifier",
+      "query": "缓存同时失效导致数据库被打满如何处理？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-redis-avalanche",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《Redis 缓存雪崩处置》"
+    },
+    {
+      "caseId": "ops-001-3",
+      "category": "paraphrase",
+      "query": "缓存雪崩的应急处置和长期治理是什么？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-redis-avalanche",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《Redis 缓存雪崩处置》"
+    },
+    {
+      "caseId": "ops-001-4",
+      "category": "multi-document",
+      "query": "TTL 随机抖动与热点预热分别解决什么问题？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-redis-avalanche",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-rate-limit",
+          "relevance": 2
+        },
+        {
+          "sourceId": "ops-circuit-breaker",
+          "relevance": 1
+        }
+      ],
+      "annotationNote": "主答案位于《Redis 缓存雪崩处置》；同时需要关联处置文档"
+    },
+    {
+      "caseId": "ops-002-1",
+      "category": "direct",
+      "query": "不存在的数据一直打到数据库怎么防？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-redis-penetration",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《Redis 缓存穿透治理》"
+    },
+    {
+      "caseId": "ops-002-2",
+      "category": "identifier",
+      "query": "布隆过滤器和空对象缓存如何组合？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-redis-penetration",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《Redis 缓存穿透治理》"
+    },
+    {
+      "caseId": "ops-002-3",
+      "category": "paraphrase",
+      "query": "什么是缓存穿透，应该监控哪个指标？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-redis-penetration",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《Redis 缓存穿透治理》"
+    },
+    {
+      "caseId": "ops-002-4",
+      "category": "multi-document",
+      "query": "恶意查询随机 ID 时如何保护 MySQL？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-redis-penetration",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-rate-limit",
+          "relevance": 2
+        },
+        {
+          "sourceId": "ops-redis-avalanche",
+          "relevance": 1
+        }
+      ],
+      "annotationNote": "主答案位于《Redis 缓存穿透治理》；同时需要关联处置文档"
+    },
+    {
+      "caseId": "ops-003-1",
+      "category": "direct",
+      "query": "单个热点 key 过期导致并发回源怎么处理？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-redis-hotkey",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《Redis 热点 Key 击穿治理》"
+    },
+    {
+      "caseId": "ops-003-2",
+      "category": "identifier",
+      "query": "缓存击穿为什么要用互斥重建？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-redis-hotkey",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《Redis 热点 Key 击穿治理》"
+    },
+    {
+      "caseId": "ops-003-3",
+      "category": "paraphrase",
+      "query": "逻辑过期和双缓存副本有什么作用？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-redis-hotkey",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《Redis 热点 Key 击穿治理》"
+    },
+    {
+      "caseId": "ops-003-4",
+      "category": "multi-document",
+      "query": "热点缓存重建锁需要注意什么？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-redis-hotkey",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-redis-avalanche",
+          "relevance": 1
+        },
+        {
+          "sourceId": "ops-rate-limit",
+          "relevance": 1
+        }
+      ],
+      "annotationNote": "主答案位于《Redis 热点 Key 击穿治理》；同时需要关联处置文档"
+    },
+    {
+      "caseId": "ops-004-1",
+      "category": "direct",
+      "query": "MySQL 接口变慢如何定位 SQL？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-mysql-slow-query",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《MySQL 慢查询排查》"
+    },
+    {
+      "caseId": "ops-004-2",
+      "category": "identifier",
+      "query": "EXPLAIN ANALYZE 排查慢查询看哪些信息？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-mysql-slow-query",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《MySQL 慢查询排查》"
+    },
+    {
+      "caseId": "ops-004-3",
+      "category": "paraphrase",
+      "query": "联合索引最左前缀失效怎么确认？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-mysql-slow-query",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《MySQL 慢查询排查》"
+    },
+    {
+      "caseId": "ops-004-4",
+      "category": "multi-document",
+      "query": "慢 SQL 优化后应该对比哪些指标？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-mysql-slow-query",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-cpu-high",
+          "relevance": 1
+        },
+        {
+          "sourceId": "ops-observability",
+          "relevance": 1
+        }
+      ],
+      "annotationNote": "主答案位于《MySQL 慢查询排查》；同时需要关联处置文档"
+    },
+    {
+      "caseId": "ops-005-1",
+      "category": "direct",
+      "query": "MySQL 报 deadlock found 怎么处理？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-mysql-deadlock",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《MySQL 死锁处置》"
+    },
+    {
+      "caseId": "ops-005-2",
+      "category": "identifier",
+      "query": "如何从 InnoDB 状态分析锁等待环？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-mysql-deadlock",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《MySQL 死锁处置》"
+    },
+    {
+      "caseId": "ops-005-3",
+      "category": "paraphrase",
+      "query": "死锁后哪些事务可以自动重试？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-mysql-deadlock",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《MySQL 死锁处置》"
+    },
+    {
+      "caseId": "ops-005-4",
+      "category": "multi-document",
+      "query": "统一加锁顺序为什么能减少死锁？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-mysql-deadlock",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-mysql-slow-query",
+          "relevance": 1
+        },
+        {
+          "sourceId": "ops-observability",
+          "relevance": 1
+        }
+      ],
+      "annotationNote": "主答案位于《MySQL 死锁处置》；同时需要关联处置文档"
+    },
+    {
+      "caseId": "ops-006-1",
+      "category": "direct",
+      "query": "PostgreSQL 连接槽耗尽怎么办？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-postgres-connections",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《PostgreSQL 连接耗尽处置》"
+    },
+    {
+      "caseId": "ops-006-2",
+      "category": "identifier",
+      "query": "remaining connection slots are reserved 如何排查？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-postgres-connections",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《PostgreSQL 连接耗尽处置》"
+    },
+    {
+      "caseId": "ops-006-3",
+      "category": "paraphrase",
+      "query": "pg_stat_activity 如何找连接泄漏？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-postgres-connections",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《PostgreSQL 连接耗尽处置》"
+    },
+    {
+      "caseId": "ops-006-4",
+      "category": "multi-document",
+      "query": "为什么不能直接无限增大 max_connections？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-postgres-connections",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-memory-high",
+          "relevance": 1
+        },
+        {
+          "sourceId": "ops-observability",
+          "relevance": 1
+        }
+      ],
+      "annotationNote": "主答案位于《PostgreSQL 连接耗尽处置》；同时需要关联处置文档"
+    },
+    {
+      "caseId": "ops-007-1",
+      "category": "direct",
+      "query": "RabbitMQ 队列消息越堆越多怎么排查？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-rabbitmq-backlog",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《RabbitMQ 消息堆积处置》"
+    },
+    {
+      "caseId": "ops-007-2",
+      "category": "identifier",
+      "query": "ready 很高和 unacked 很高分别说明什么？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-rabbitmq-backlog",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《RabbitMQ 消息堆积处置》"
+    },
+    {
+      "caseId": "ops-007-3",
+      "category": "paraphrase",
+      "query": "消费者扩容前为什么要确认数据库容量？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-rabbitmq-backlog",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《RabbitMQ 消息堆积处置》"
+    },
+    {
+      "caseId": "ops-007-4",
+      "category": "multi-document",
+      "query": "prefetch 和 ack rate 如何影响消息堆积？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-rabbitmq-backlog",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-rate-limit",
+          "relevance": 2
+        },
+        {
+          "sourceId": "ops-mysql-slow-query",
+          "relevance": 1
+        }
+      ],
+      "annotationNote": "主答案位于《RabbitMQ 消息堆积处置》；同时需要关联处置文档"
+    },
+    {
+      "caseId": "ops-008-1",
+      "category": "direct",
+      "query": "RabbitMQ 死信队列里的消息怎么重放？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-rabbitmq-dlq",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《RabbitMQ 死信队列处理》"
+    },
+    {
+      "caseId": "ops-008-2",
+      "category": "identifier",
+      "query": "毒消息为什么不能无限 requeue？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-rabbitmq-dlq",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《RabbitMQ 死信队列处理》"
+    },
+    {
+      "caseId": "ops-008-3",
+      "category": "paraphrase",
+      "query": "DLQ 记录需要包含哪些字段？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-rabbitmq-dlq",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《RabbitMQ 死信队列处理》"
+    },
+    {
+      "caseId": "ops-008-4",
+      "category": "multi-document",
+      "query": "死信消息如何区分可重试和人工处理？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-rabbitmq-dlq",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-rabbitmq-backlog",
+          "relevance": 2
+        },
+        {
+          "sourceId": "ops-incident-ticket",
+          "relevance": 1
+        }
+      ],
+      "annotationNote": "主答案位于《RabbitMQ 死信队列处理》；同时需要关联处置文档"
+    },
+    {
+      "caseId": "ops-009-1",
+      "category": "direct",
+      "query": "Java 服务 OOM 后第一时间保留什么？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-jvm-oom",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《JVM OutOfMemoryError 处置》"
+    },
+    {
+      "caseId": "ops-009-2",
+      "category": "identifier",
+      "query": "Java heap space 和 Metaspace 如何区分？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-jvm-oom",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《JVM OutOfMemoryError 处置》"
+    },
+    {
+      "caseId": "ops-009-3",
+      "category": "paraphrase",
+      "query": "MAT dominator tree 用来查什么？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-jvm-oom",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《JVM OutOfMemoryError 处置》"
+    },
+    {
+      "caseId": "ops-009-4",
+      "category": "multi-document",
+      "query": "重启为什么不能算 OOM 根治方案？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-jvm-oom",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-gc-pause",
+          "relevance": 2
+        },
+        {
+          "sourceId": "ops-memory-high",
+          "relevance": 2
+        }
+      ],
+      "annotationNote": "主答案位于《JVM OutOfMemoryError 处置》；同时需要关联处置文档"
+    },
+    {
+      "caseId": "ops-010-1",
+      "category": "direct",
+      "query": "Java 请求 P99 抖动怀疑 GC 怎么验证？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-gc-pause",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《JVM GC 停顿排查》"
+    },
+    {
+      "caseId": "ops-010-2",
+      "category": "identifier",
+      "query": "G1 evacuation failure 表示什么？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-gc-pause",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《JVM GC 停顿排查》"
+    },
+    {
+      "caseId": "ops-010-3",
+      "category": "paraphrase",
+      "query": "humongous allocation 如何导致长停顿？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-gc-pause",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《JVM GC 停顿排查》"
+    },
+    {
+      "caseId": "ops-010-4",
+      "category": "multi-document",
+      "query": "为什么盲目增大 JVM 堆可能适得其反？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-gc-pause",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-jvm-oom",
+          "relevance": 2
+        },
+        {
+          "sourceId": "ops-memory-high",
+          "relevance": 1
+        }
+      ],
+      "annotationNote": "主答案位于《JVM GC 停顿排查》；同时需要关联处置文档"
+    },
+    {
+      "caseId": "ops-011-1",
+      "category": "direct",
+      "query": "Linux CPU 100% 怎么定位到 Java 线程？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-cpu-high",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《Linux CPU 飙高排查》"
+    },
+    {
+      "caseId": "ops-011-2",
+      "category": "identifier",
+      "query": "top 里的 user system iowait 如何解释？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-cpu-high",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《Linux CPU 飙高排查》"
+    },
+    {
+      "caseId": "ops-011-3",
+      "category": "paraphrase",
+      "query": "线程 ID 转十六进制后怎样配合 jstack？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-cpu-high",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《Linux CPU 飙高排查》"
+    },
+    {
+      "caseId": "ops-011-4",
+      "category": "multi-document",
+      "query": "CPU 高但 iowait 占比大应该查什么？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-cpu-high",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-disk-full",
+          "relevance": 1
+        },
+        {
+          "sourceId": "ops-observability",
+          "relevance": 1
+        }
+      ],
+      "annotationNote": "主答案位于《Linux CPU 飙高排查》；同时需要关联处置文档"
+    },
+    {
+      "caseId": "ops-012-1",
+      "category": "direct",
+      "query": "Linux available 很低是否一定内存泄漏？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-memory-high",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《Linux 内存占用高排查》"
+    },
+    {
+      "caseId": "ops-012-2",
+      "category": "identifier",
+      "query": "RSS page cache 和 swap 怎么区分？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-memory-high",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《Linux 内存占用高排查》"
+    },
+    {
+      "caseId": "ops-012-3",
+      "category": "paraphrase",
+      "query": "容器内存接近 memory.max 怎么处理？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-memory-high",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《Linux 内存占用高排查》"
+    },
+    {
+      "caseId": "ops-012-4",
+      "category": "multi-document",
+      "query": "为什么不建议直接执行 drop_caches？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-memory-high",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-jvm-oom",
+          "relevance": 2
+        },
+        {
+          "sourceId": "ops-cpu-high",
+          "relevance": 1
+        }
+      ],
+      "annotationNote": "主答案位于《Linux 内存占用高排查》；同时需要关联处置文档"
+    },
+    {
+      "caseId": "ops-013-1",
+      "category": "direct",
+      "query": "服务器 No space left on device 怎么排查？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-disk-full",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《磁盘空间耗尽处置》"
+    },
+    {
+      "caseId": "ops-013-2",
+      "category": "identifier",
+      "query": "df 和 du 结果不一致通常是什么原因？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-disk-full",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《磁盘空间耗尽处置》"
+    },
+    {
+      "caseId": "ops-013-3",
+      "category": "paraphrase",
+      "query": "inode 用尽与容量用尽如何区分？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-disk-full",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《磁盘空间耗尽处置》"
+    },
+    {
+      "caseId": "ops-013-4",
+      "category": "multi-document",
+      "query": "数据库磁盘满了为什么不能手删数据文件？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-disk-full",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-observability",
+          "relevance": 1
+        },
+        {
+          "sourceId": "ops-backup-restore",
+          "relevance": 1
+        }
+      ],
+      "annotationNote": "主答案位于《磁盘空间耗尽处置》；同时需要关联处置文档"
+    },
+    {
+      "caseId": "ops-014-1",
+      "category": "direct",
+      "query": "接口 timeout 如何判断卡在 DNS 还是 TLS？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-network-timeout",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《网络超时分层排查》"
+    },
+    {
+      "caseId": "ops-014-2",
+      "category": "identifier",
+      "query": "curl -w 能帮助分析哪些网络阶段？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-network-timeout",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《网络超时分层排查》"
+    },
+    {
+      "caseId": "ops-014-3",
+      "category": "paraphrase",
+      "query": "网络重试为什么要指数退避和抖动？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-network-timeout",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《网络超时分层排查》"
+    },
+    {
+      "caseId": "ops-014-4",
+      "category": "multi-document",
+      "query": "非幂等 POST 超时后能否直接重试？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-network-timeout",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-circuit-breaker",
+          "relevance": 2
+        },
+        {
+          "sourceId": "ops-observability",
+          "relevance": 1
+        }
+      ],
+      "annotationNote": "主答案位于《网络超时分层排查》；同时需要关联处置文档"
+    },
+    {
+      "caseId": "ops-015-1",
+      "category": "direct",
+      "query": "Pod CrashLoopBackOff 怎么排查？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-k8s-crashloop",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《Kubernetes CrashLoopBackOff 排查》"
+    },
+    {
+      "caseId": "ops-015-2",
+      "category": "identifier",
+      "query": "kubectl logs --previous 有什么作用？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-k8s-crashloop",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《Kubernetes CrashLoopBackOff 排查》"
+    },
+    {
+      "caseId": "ops-015-3",
+      "category": "paraphrase",
+      "query": "容器退出码 OOMKilled 应该检查什么？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-k8s-crashloop",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《Kubernetes CrashLoopBackOff 排查》"
+    },
+    {
+      "caseId": "ops-015-4",
+      "category": "multi-document",
+      "query": "为什么删除 Pod 不能解决持续崩溃？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-k8s-crashloop",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-memory-high",
+          "relevance": 2
+        },
+        {
+          "sourceId": "ops-spring-startup",
+          "relevance": 1
+        }
+      ],
+      "annotationNote": "主答案位于《Kubernetes CrashLoopBackOff 排查》；同时需要关联处置文档"
+    },
+    {
+      "caseId": "ops-016-1",
+      "category": "direct",
+      "query": "Kubernetes Pod 一直 Pending 怎么处理？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-k8s-pending",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《Kubernetes Pod Pending 排查》"
+    },
+    {
+      "caseId": "ops-016-2",
+      "category": "identifier",
+      "query": "调度失败时 requests 和 allocatable 怎么比？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-k8s-pending",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《Kubernetes Pod Pending 排查》"
+    },
+    {
+      "caseId": "ops-016-3",
+      "category": "paraphrase",
+      "query": "污点和 toleration 不匹配会有什么现象？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-k8s-pending",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《Kubernetes Pod Pending 排查》"
+    },
+    {
+      "caseId": "ops-016-4",
+      "category": "multi-document",
+      "query": "PVC 未绑定为什么会阻止 Pod 调度？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-k8s-pending",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-image-pull",
+          "relevance": 1
+        },
+        {
+          "sourceId": "ops-observability",
+          "relevance": 1
+        }
+      ],
+      "annotationNote": "主答案位于《Kubernetes Pod Pending 排查》；同时需要关联处置文档"
+    },
+    {
+      "caseId": "ops-017-1",
+      "category": "direct",
+      "query": "ImagePullBackOff 常见原因有哪些？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-image-pull",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《容器镜像拉取失败》"
+    },
+    {
+      "caseId": "ops-017-2",
+      "category": "identifier",
+      "query": "私有仓库拉取失败如何检查 imagePullSecrets？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-image-pull",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《容器镜像拉取失败》"
+    },
+    {
+      "caseId": "ops-017-3",
+      "category": "paraphrase",
+      "query": "生产部署为什么建议固定镜像 digest？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-image-pull",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《容器镜像拉取失败》"
+    },
+    {
+      "caseId": "ops-017-4",
+      "category": "multi-document",
+      "query": "镜像仓库返回 429 时怎么处理？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-image-pull",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-k8s-pending",
+          "relevance": 1
+        },
+        {
+          "sourceId": "ops-rate-limit",
+          "relevance": 1
+        }
+      ],
+      "annotationNote": "主答案位于《容器镜像拉取失败》；同时需要关联处置文档"
+    },
+    {
+      "caseId": "ops-018-1",
+      "category": "direct",
+      "query": "Spring Boot BeanCreationException 怎么定位根因？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-spring-startup",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《Spring Boot 启动失败排查》"
+    },
+    {
+      "caseId": "ops-018-2",
+      "category": "identifier",
+      "query": "启动日志多层 Caused by 应该看哪一层？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-spring-startup",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《Spring Boot 启动失败排查》"
+    },
+    {
+      "caseId": "ops-018-3",
+      "category": "paraphrase",
+      "query": "如何查看自动配置条件报告？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-spring-startup",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《Spring Boot 启动失败排查》"
+    },
+    {
+      "caseId": "ops-018-4",
+      "category": "multi-document",
+      "query": "本地配置正确但启动仍失败为什么要检查 profile？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-spring-startup",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-network-timeout",
+          "relevance": 1
+        },
+        {
+          "sourceId": "ops-observability",
+          "relevance": 1
+        }
+      ],
+      "annotationNote": "主答案位于《Spring Boot 启动失败排查》；同时需要关联处置文档"
+    },
+    {
+      "caseId": "ops-019-1",
+      "category": "direct",
+      "query": "Resilience4j CLOSED OPEN HALF_OPEN 如何流转？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-circuit-breaker",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《服务熔断器配置与处置》"
+    },
+    {
+      "caseId": "ops-019-2",
+      "category": "identifier",
+      "query": "熔断器为什么需要 minimum number of calls？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-circuit-breaker",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《服务熔断器配置与处置》"
+    },
+    {
+      "caseId": "ops-019-3",
+      "category": "paraphrase",
+      "query": "慢调用比例如何参与熔断判断？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-circuit-breaker",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《服务熔断器配置与处置》"
+    },
+    {
+      "caseId": "ops-019-4",
+      "category": "multi-document",
+      "query": "熔断后如何通过半开探测恢复？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-circuit-breaker",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-network-timeout",
+          "relevance": 2
+        },
+        {
+          "sourceId": "ops-rate-limit",
+          "relevance": 1
+        }
+      ],
+      "annotationNote": "主答案位于《服务熔断器配置与处置》；同时需要关联处置文档"
+    },
+    {
+      "caseId": "ops-020-1",
+      "category": "direct",
+      "query": "API 返回 429 应该怎样处理？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-rate-limit",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《接口限流与 429 处置》"
+    },
+    {
+      "caseId": "ops-020-2",
+      "category": "identifier",
+      "query": "Redis Lua 滑动窗口限流如何设计 key？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-rate-limit",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《接口限流与 429 处置》"
+    },
+    {
+      "caseId": "ops-020-3",
+      "category": "paraphrase",
+      "query": "Retry-After 响应头有什么作用？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-rate-limit",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《接口限流与 429 处置》"
+    },
+    {
+      "caseId": "ops-020-4",
+      "category": "multi-document",
+      "query": "限流解除为什么要逐级放量？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-rate-limit",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-circuit-breaker",
+          "relevance": 2
+        },
+        {
+          "sourceId": "ops-observability",
+          "relevance": 1
+        }
+      ],
+      "annotationNote": "主答案位于《接口限流与 429 处置》；同时需要关联处置文档"
+    },
+    {
+      "caseId": "ops-021-1",
+      "category": "direct",
+      "query": "接口返回 401 从哪些地方排查？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-auth-401",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《API 401 鉴权失败排查》"
+    },
+    {
+      "caseId": "ops-021-2",
+      "category": "identifier",
+      "query": "401 和 403 的区别是什么？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-auth-401",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《API 401 鉴权失败排查》"
+    },
+    {
+      "caseId": "ops-021-3",
+      "category": "paraphrase",
+      "query": "JWT issuer audience 不匹配会怎样？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-auth-401",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《API 401 鉴权失败排查》"
+    },
+    {
+      "caseId": "ops-021-4",
+      "category": "multi-document",
+      "query": "鉴权日志为什么不能打印完整 token？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-auth-401",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-observability",
+          "relevance": 1
+        },
+        {
+          "sourceId": "ops-network-timeout",
+          "relevance": 1
+        }
+      ],
+      "annotationNote": "主答案位于《API 401 鉴权失败排查》；同时需要关联处置文档"
+    },
+    {
+      "caseId": "ops-022-1",
+      "category": "direct",
+      "query": "SSE 连接经 Nginx 一会就断怎么排查？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-sse-disconnect",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《SSE 流式连接中断排查》"
+    },
+    {
+      "caseId": "ops-022-2",
+      "category": "identifier",
+      "query": "text/event-stream 为什么要定期发心跳？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-sse-disconnect",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《SSE 流式连接中断排查》"
+    },
+    {
+      "caseId": "ops-022-3",
+      "category": "paraphrase",
+      "query": "流式响应首 token 后为什么不能切换 Provider？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-sse-disconnect",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《SSE 流式连接中断排查》"
+    },
+    {
+      "caseId": "ops-022-4",
+      "category": "multi-document",
+      "query": "Last-Event-ID 能解决什么问题？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-sse-disconnect",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-network-timeout",
+          "relevance": 2
+        },
+        {
+          "sourceId": "ops-observability",
+          "relevance": 1
+        }
+      ],
+      "annotationNote": "主答案位于《SSE 流式连接中断排查》；同时需要关联处置文档"
+    },
+    {
+      "caseId": "ops-023-1",
+      "category": "direct",
+      "query": "生产发布后错误率飙升如何回滚？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-deploy-rollback",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《生产发布回滚流程》"
+    },
+    {
+      "caseId": "ops-023-2",
+      "category": "identifier",
+      "query": "为什么数据库迁移会让应用回滚失败？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-deploy-rollback",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《生产发布回滚流程》"
+    },
+    {
+      "caseId": "ops-023-3",
+      "category": "paraphrase",
+      "query": "回滚完成后必须验证哪些指标？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-deploy-rollback",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《生产发布回滚流程》"
+    },
+    {
+      "caseId": "ops-023-4",
+      "category": "multi-document",
+      "query": "发布事故中为什么要先冻结继续放量？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-deploy-rollback",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-canary",
+          "relevance": 2
+        },
+        {
+          "sourceId": "ops-incident-ticket",
+          "relevance": 1
+        }
+      ],
+      "annotationNote": "主答案位于《生产发布回滚流程》；同时需要关联处置文档"
+    },
+    {
+      "caseId": "ops-024-1",
+      "category": "direct",
+      "query": "灰度发布应该如何分阶段放量？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-canary",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《灰度发布与放量》"
+    },
+    {
+      "caseId": "ops-024-2",
+      "category": "identifier",
+      "query": "金丝雀发布每阶段观察哪些指标？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-canary",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《灰度发布与放量》"
+    },
+    {
+      "caseId": "ops-024-3",
+      "category": "paraphrase",
+      "query": "为什么 1% 流量零错误不能直接全量？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-canary",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《灰度发布与放量》"
+    },
+    {
+      "caseId": "ops-024-4",
+      "category": "multi-document",
+      "query": "灰度期间如何设置自动停止阈值？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-canary",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-deploy-rollback",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-observability",
+          "relevance": 1
+        }
+      ],
+      "annotationNote": "主答案位于《灰度发布与放量》；同时需要关联处置文档"
+    },
+    {
+      "caseId": "ops-025-1",
+      "category": "direct",
+      "query": "如何用 traceId 关联日志和调用链？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-observability",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《日志指标链路关联排障》"
+    },
+    {
+      "caseId": "ops-025-2",
+      "category": "identifier",
+      "query": "从 SLO 告警开始排障的步骤是什么？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-observability",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《日志指标链路关联排障》"
+    },
+    {
+      "caseId": "ops-025-3",
+      "category": "paraphrase",
+      "query": "结构化日志至少应包含哪些字段？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-observability",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《日志指标链路关联排障》"
+    },
+    {
+      "caseId": "ops-025-4",
+      "category": "multi-document",
+      "query": "慢 Span 发现后为什么还要结合资源指标验证？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-observability",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-incident-ticket",
+          "relevance": 1
+        },
+        {
+          "sourceId": "ops-cpu-high",
+          "relevance": 1
+        }
+      ],
+      "annotationNote": "主答案位于《日志指标链路关联排障》；同时需要关联处置文档"
+    },
+    {
+      "caseId": "ops-026-1",
+      "category": "direct",
+      "query": "线上故障工单需要记录哪些内容？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-incident-ticket",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《故障工单与时间线》"
+    },
+    {
+      "caseId": "ops-026-2",
+      "category": "identifier",
+      "query": "事故时间线为什么要区分事实和推测？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-incident-ticket",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《故障工单与时间线》"
+    },
+    {
+      "caseId": "ops-026-3",
+      "category": "paraphrase",
+      "query": "复盘改进项必须包含什么？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-incident-ticket",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《故障工单与时间线》"
+    },
+    {
+      "caseId": "ops-026-4",
+      "category": "multi-document",
+      "query": "无责复盘的目标是什么？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-incident-ticket",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-observability",
+          "relevance": 2
+        },
+        {
+          "sourceId": "ops-deploy-rollback",
+          "relevance": 1
+        }
+      ],
+      "annotationNote": "主答案位于《故障工单与时间线》；同时需要关联处置文档"
+    },
+    {
+      "caseId": "ops-027-1",
+      "category": "direct",
+      "query": "为什么有备份不等于能恢复？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-backup-restore",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《数据库备份恢复演练》"
+    },
+    {
+      "caseId": "ops-027-2",
+      "category": "identifier",
+      "query": "RPO 和 RTO 分别表示什么？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-backup-restore",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《数据库备份恢复演练》"
+    },
+    {
+      "caseId": "ops-027-3",
+      "category": "paraphrase",
+      "query": "数据库恢复演练后如何校验数据？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-backup-restore",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《数据库备份恢复演练》"
+    },
+    {
+      "caseId": "ops-027-4",
+      "category": "multi-document",
+      "query": "备份副本为什么要放在独立故障域？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-backup-restore",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-disk-full",
+          "relevance": 1
+        },
+        {
+          "sourceId": "ops-incident-ticket",
+          "relevance": 1
+        }
+      ],
+      "annotationNote": "主答案位于《数据库备份恢复演练》；同时需要关联处置文档"
+    },
+    {
+      "caseId": "ops-028-1",
+      "category": "direct",
+      "query": "pgvector HNSW 如何平衡召回率和延迟？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-pgvector-hnsw",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《pgvector HNSW 索引调优》"
+    },
+    {
+      "caseId": "ops-028-2",
+      "category": "identifier",
+      "query": "余弦距离应该选择哪个 HNSW operator class？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-pgvector-hnsw",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《pgvector HNSW 索引调优》"
+    },
+    {
+      "caseId": "ops-028-3",
+      "category": "paraphrase",
+      "query": "hnsw.ef_search 参数有什么作用？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-pgvector-hnsw",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《pgvector HNSW 索引调优》"
+    },
+    {
+      "caseId": "ops-028-4",
+      "category": "multi-document",
+      "query": "向量索引调优为什么要用固定评测集？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-pgvector-hnsw",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-rag-tuning",
+          "relevance": 2
+        },
+        {
+          "sourceId": "ops-postgres-connections",
+          "relevance": 1
+        }
+      ],
+      "annotationNote": "主答案位于《pgvector HNSW 索引调优》；同时需要关联处置文档"
+    },
+    {
+      "caseId": "ops-029-1",
+      "category": "direct",
+      "query": "RAG 检索应该用哪些离线指标评测？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-rag-tuning",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《RAG 混合检索调优》"
+    },
+    {
+      "caseId": "ops-029-2",
+      "category": "identifier",
+      "query": "RRF 混合检索如何比较向量和关键词策略？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-rag-tuning",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《RAG 混合检索调优》"
+    },
+    {
+      "caseId": "ops-029-3",
+      "category": "paraphrase",
+      "query": "错误码查询为什么适合提高关键词权重？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-rag-tuning",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《RAG 混合检索调优》"
+    },
+    {
+      "caseId": "ops-029-4",
+      "category": "multi-document",
+      "query": "candidateK 调大对召回和延迟有什么影响？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-rag-tuning",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-pgvector-hnsw",
+          "relevance": 2
+        },
+        {
+          "sourceId": "ops-observability",
+          "relevance": 1
+        }
+      ],
+      "annotationNote": "主答案位于《RAG 混合检索调优》；同时需要关联处置文档"
+    },
+    {
+      "caseId": "ops-030-1",
+      "category": "direct",
+      "query": "POST 请求超时重试怎样避免重复扣款？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-idempotency",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《接口幂等与重试安全》"
+    },
+    {
+      "caseId": "ops-030-2",
+      "category": "identifier",
+      "query": "Idempotency-Key 对应的请求指纹有什么作用？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-idempotency",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《接口幂等与重试安全》"
+    },
+    {
+      "caseId": "ops-030-3",
+      "category": "paraphrase",
+      "query": "相同幂等键但参数不同应该返回什么？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-idempotency",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《接口幂等与重试安全》"
+    },
+    {
+      "caseId": "ops-030-4",
+      "category": "multi-document",
+      "query": "幂等记录 TTL 应该如何确定？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-idempotency",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-network-timeout",
+          "relevance": 2
+        },
+        {
+          "sourceId": "ops-mysql-deadlock",
+          "relevance": 1
+        }
+      ],
+      "annotationNote": "主答案位于《接口幂等与重试安全》；同时需要关联处置文档"
+    },
+    {
+      "caseId": "ops-031-1",
+      "category": "direct",
+      "query": "API Key 泄漏后正确处置顺序是什么？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-secret-rotation",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《密钥轮换与泄漏处置》"
+    },
+    {
+      "caseId": "ops-031-2",
+      "category": "identifier",
+      "query": "密钥为什么不能写进 application.yml 提交？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-secret-rotation",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《密钥轮换与泄漏处置》"
+    },
+    {
+      "caseId": "ops-031-3",
+      "category": "paraphrase",
+      "query": "密钥轮换期间如何发现遗漏的消费者？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-secret-rotation",
+          "relevance": 3
+        }
+      ],
+      "annotationNote": "主答案位于《密钥轮换与泄漏处置》"
+    },
+    {
+      "caseId": "ops-031-4",
+      "category": "multi-document",
+      "query": "旧密钥调用归零后还需要做什么？",
+      "relevantDocuments": [
+        {
+          "sourceId": "ops-secret-rotation",
+          "relevance": 3
+        },
+        {
+          "sourceId": "ops-auth-401",
+          "relevance": 2
+        },
+        {
+          "sourceId": "ops-observability",
+          "relevance": 1
+        }
+      ],
+      "annotationNote": "主答案位于《密钥轮换与泄漏处置》；同时需要关联处置文档"
+    }
+  ]
+}

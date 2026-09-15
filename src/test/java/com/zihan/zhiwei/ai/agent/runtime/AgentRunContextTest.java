@@ -28,4 +28,22 @@ class AgentRunContextTest {
         assertThat(registry.get("zhiwei.agent.node.tokens").tag("node", "classify")
                 .tag("type", "prompt").tag("provider", "p").counter().count()).isEqualTo(7);
     }
+
+    @Test
+    void shouldRestoreUsageAndBudgetFromSnapshot() {
+        AgentNodeObserver observer = new AgentNodeObserver(new SimpleMeterRegistry());
+        AgentRunContext original = new AgentRunContext(
+                new TokenBudget(100, 20, 5, Duration.ofSeconds(5)), observer);
+        try (TokenBudget.Reservation reservation = original.reserve("classify", 10, 10, false)) {
+            original.commit("classify", reservation,
+                    new ProviderChatResponse("{}", "m", "p", 7, 3, 10));
+        }
+
+        AgentRunContext restored = AgentRunContext.restore(original.snapshot(), observer);
+
+        assertThat(restored.promptTokens()).isEqualTo(7);
+        assertThat(restored.completionTokens()).isEqualTo(3);
+        assertThat(restored.totalTokens()).isEqualTo(10);
+        assertThat(restored.remainingTokens()).isEqualTo(90);
+    }
 }

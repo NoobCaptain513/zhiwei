@@ -69,6 +69,36 @@ class TokenBudgetTest {
         }
     }
 
+    @Test
+    void shouldRestoreUsedTokensNodeCallsAndRemainingDeadline() {
+        TokenBudget original = new TokenBudget(100, 20, 5, Duration.ofSeconds(5));
+        try (TokenBudget.Reservation reservation = original.reserve("classify", 30, false)) {
+            reservation.commit(12, 8);
+        }
+
+        TokenBudget restored = TokenBudget.restore(original.snapshot());
+
+        assertThat(restored.usedTokens()).isEqualTo(20);
+        assertThat(restored.remainingTokens()).isEqualTo(80);
+        assertThat(restored.nodeCalls()).isEqualTo(1);
+        assertThat(restored.remainingDurationMillis()).isPositive();
+        restored.reserve("plan", 10, false).close();
+        assertThat(restored.nodeCalls()).isEqualTo(2);
+    }
+
+    @Test
+    void restoredBudgetCannotExceedCurrentServerPolicy() {
+        TokenBudget.Snapshot forged = new TokenBudget.Snapshot(
+                1_000_000, 0, 1_000_000, 100, 2, 600_000L);
+        TokenBudget serverPolicy = new TokenBudget(500, 100, 5, Duration.ofSeconds(5));
+
+        TokenBudget restored = TokenBudget.restore(forged, serverPolicy);
+
+        assertThat(restored.remainingTokens()).isEqualTo(400);
+        assertThat(restored.remainingDurationMillis()).isBetween(1L, 5000L);
+        assertThat(restored.snapshot().maxNodeCalls()).isEqualTo(5);
+    }
+
     private static int attemptReserve(TokenBudget budget, int amount) {
         try (TokenBudget.Reservation ignored = budget.reserve("node", amount, false)) {
             return 1;

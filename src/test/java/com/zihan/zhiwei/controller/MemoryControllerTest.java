@@ -3,6 +3,8 @@ package com.zihan.zhiwei.controller;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zihan.zhiwei.ai.memory.*;
 import com.zihan.zhiwei.ai.memory.model.*;
+import com.zihan.zhiwei.ai.rag.agentic.AgenticRagOrchestrator;
+import com.zihan.zhiwei.ai.rag.agentic.model.AgenticRagResult;
 import com.zihan.zhiwei.common.exception.GlobalExceptionHandler;
 import com.zihan.zhiwei.common.exception.MemoryVersionConflictException;
 import com.zihan.zhiwei.pojo.dto.memory.*;
@@ -12,6 +14,7 @@ import org.springframework.http.MediaType;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -28,6 +31,7 @@ class MemoryControllerTest {
     private final MemoryFactService facts = mock(MemoryFactService.class);
     private final MemoryAuditService audits = mock(MemoryAuditService.class);
     private final MemoryForgetService forget = mock(MemoryForgetService.class);
+    private final AgenticRagOrchestrator agenticRag = mock(AgenticRagOrchestrator.class);
     private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
     private MockMvc mvc;
 
@@ -35,6 +39,7 @@ class MemoryControllerTest {
     void setUp() {
         var controller = new MemoryController(summaries, checkpoints, facts, audits, Optional.of(forget),
                 new MemoryOwnerResolver());
+        ReflectionTestUtils.setField(controller, "agenticRagOrchestrator", agenticRag);
         mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
@@ -114,6 +119,74 @@ class MemoryControllerTest {
                 .andExpect(header().string("ETag", "\"1\""));
 
         verify(checkpoints).create(argThat(c -> c.userId().equals("alice") && c.requestId().equals("request-1")));
+    }
+
+    @Test
+    void agenticRagResumeEndpointContinuesWorkflowAndReturnsAnswer() throws Exception {
+        var auth = new UsernamePasswordAuthenticationToken("alice", "n/a", List.of());
+        AgenticRagResult result = new AgenticRagResult(true, "恢复后的答案 [E7]", List.of(),
+                1, false, false, "ANSWERED", "test", "qwen-plus",
+                1, 1, 2, false, 10L);
+        when(agenticRag.resume("alice", 9L, 4L, "alice", "retry", "req-1"))
+                .thenReturn(result);
+
+        mvc.perform(post("/api/memories/checkpoints/9/resume/agentic-rag").principal(auth)
+                        .header("If-Match", "\"4\"")
+                        .header("X-Request-Id", "req-1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"userId\":\"alice\",\"actorId\":\"alice\",\"reason\":\"retry\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.answer").value("恢复后的答案 [E7]"))
+                .andExpect(jsonPath("$.data.terminationReason").value("ANSWERED"));
+
+        verify(agenticRag).resume("alice", 9L, 4L, "alice", "retry", "req-1");
+        verify(checkpoints, never()).resume(anyString(), anyLong(), anyLong(), anyString(), anyString(), any());
+    }
+
+    @Test
+    void agenticRagResumeRequiresAuthenticatedPrincipal() throws Exception {
+        mvc.perform(post("/api/memories/checkpoints/9/resume/agentic-rag")
+                        .header("If-Match", "\"4\"")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"userId\":\"alice\",\"actorId\":\"alice\",\"reason\":\"retry\"}"))
+                .andExpect(status().isForbidden());
+
+        verifyNoInteractions(agenticRag);
+    }
+
+    @Test
+    void genericCheckpointApiCannotCreateExecutableAgenticState() throws Exception {
+        var auth = new UsernamePasswordAuthenticationToken("alice", "n/a", List.of());
+
+        mvc.perform(post("/api/memories/checkpoints").principal(auth)
+                        .param("actorId", "alice").param("reason", "forge")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"userId\":\"alice\",\"runId\":\"run-forged\",\"conversationId\":9," +
+                                "\"checkpointType\":\"AGENTIC_RAG\",\"nodeName\":\"generate\"," +
+                                "\"state\":{\"schemaVersion\":1,\"currentNode\":\"generate\"}," +
+                                "\"status\":\"PAUSED\",\"sequenceNo\":4}"))
+                .andExpect(status().isForbidden());
+
+        verify(checkpoints, never()).create(any());
+    }
+
+    @Test
+    void checkpointResponsesRedactExecutableAgenticState() throws Exception {
+        var auth = new UsernamePasswordAuthenticationToken("alice", "n/a", List.of());
+        var state = objectMapper.createObjectNode();
+        state.put("schemaVersion", 1);
+        state.put("currentNode", "grade");
+        state.set("resumeParameters", objectMapper.createObjectNode().put("query", "private"));
+        var checkpoint = new AgentCheckpoint(
+                9L, "run", 10L, "alice", AgentCheckpoint.Type.AGENTIC_RAG, "grade", state,
+                AgentCheckpoint.Status.FAILED, 3, 4L, null, "PROCESS_CRASH",
+                LocalDateTime.now().plusDays(1), LocalDateTime.now(), LocalDateTime.now());
+        when(checkpoints.get("alice", 9L)).thenReturn(Optional.of(checkpoint));
+
+        mvc.perform(get("/api/memories/checkpoints/9").principal(auth).param("userId", "alice"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.checkpoint.state.currentNode").value("grade"))
+                .andExpect(jsonPath("$.data.checkpoint.state.resumeParameters").doesNotExist());
     }
 
     @Test

@@ -15,11 +15,46 @@ public final class TokenBudget {
     private int nodeCalls;
 
     public TokenBudget(int maxTokens, int reservedAnswerTokens, int maxNodeCalls, Duration duration) {
+        this(maxTokens, reservedAnswerTokens, maxNodeCalls, duration, 0, 0);
+    }
+
+    private TokenBudget(int maxTokens, int reservedAnswerTokens, int maxNodeCalls, Duration duration,
+                        int usedTokens, int nodeCalls) {
         this.maxTokens = Math.max(1, maxTokens);
         this.reservedAnswerTokens = Math.min(this.maxTokens, Math.max(0, reservedAnswerTokens));
         this.maxNodeCalls = Math.max(1, maxNodeCalls);
         long durationNanos = Math.max(1L, duration == null ? Duration.ofSeconds(30).toNanos() : duration.toNanos());
         this.deadlineNanos = System.nanoTime() + durationNanos;
+        this.usedTokens = Math.min(this.maxTokens, Math.max(0, usedTokens));
+        this.nodeCalls = Math.min(this.maxNodeCalls, Math.max(0, nodeCalls));
+    }
+
+    public synchronized Snapshot snapshot() {
+        return new Snapshot(maxTokens, reservedAnswerTokens, maxNodeCalls, usedTokens, nodeCalls,
+                remainingDurationMillis());
+    }
+
+    public static TokenBudget restore(Snapshot snapshot) {
+        if (snapshot == null) throw new IllegalArgumentException("token budget snapshot is required");
+        return new TokenBudget(snapshot.maxTokens(), snapshot.reservedAnswerTokens(), snapshot.maxNodeCalls(),
+                Duration.ofMillis(Math.max(1L, snapshot.remainingDurationMillis())),
+                snapshot.usedTokens(), snapshot.nodeCalls());
+    }
+
+    /** Restores consumed budget while clamping all limits to the current server policy. */
+    public static TokenBudget restore(Snapshot snapshot, TokenBudget serverPolicy) {
+        if (snapshot == null) throw new IllegalArgumentException("token budget snapshot is required");
+        if (serverPolicy == null) throw new IllegalArgumentException("server budget policy is required");
+        Snapshot policy = serverPolicy.snapshot();
+        long remainingMillis = Math.max(1L,
+                Math.min(Math.max(1L, snapshot.remainingDurationMillis()),
+                        Math.max(1L, policy.remainingDurationMillis())));
+        int maxTokens = Math.min(Math.max(1, snapshot.maxTokens()), policy.maxTokens());
+        int reservedAnswerTokens = Math.min(maxTokens,
+                Math.max(Math.max(0, snapshot.reservedAnswerTokens()), policy.reservedAnswerTokens()));
+        int maxNodeCalls = Math.min(Math.max(1, snapshot.maxNodeCalls()), policy.maxNodeCalls());
+        return new TokenBudget(maxTokens, reservedAnswerTokens, maxNodeCalls,
+                Duration.ofMillis(remainingMillis), snapshot.usedTokens(), snapshot.nodeCalls());
     }
 
     public synchronized Reservation reserve(String node, int estimatedTokens, boolean critical) {
@@ -63,6 +98,9 @@ public final class TokenBudget {
     public long remainingDurationMillis() {
         return Math.max(0L, Duration.ofNanos(Math.max(0L, deadlineNanos - System.nanoTime())).toMillis());
     }
+
+    public record Snapshot(int maxTokens, int reservedAnswerTokens, int maxNodeCalls,
+                           int usedTokens, int nodeCalls, long remainingDurationMillis) {}
 
     public static final class Reservation implements AutoCloseable {
         private final TokenBudget owner;

@@ -40,7 +40,8 @@ public class CheckpointServiceImpl implements CheckpointService {
         row.setExpiresAt(now.plus(properties.getCheckpointTtl())); row.setIsDeleted(0);
         mapper.insert(row);
         appendAudit(command.userId(), row.getId(), MemoryAuditEvent.Action.CREATE, null, 1L,
-                command.actorId(), command.reason(), command.requestId(), row.getStateJson());
+                command.actorId(), command.reason(), command.requestId(),
+                auditPayload(command.checkpointType(), row.getStateJson()));
         return toModel(row);
     }
 
@@ -61,6 +62,13 @@ public class CheckpointServiceImpl implements CheckpointService {
                 .filter(row -> row.getExpiresAt() == null || row.getExpiresAt().isAfter(now))
                 .map(this::toModel)
                 .toList();
+    }
+
+    @Override
+    public boolean hasLaterInRun(String userId, String runId, int sequenceNo, long checkpointId) {
+        requireOwner(userId);
+        if (runId == null || runId.isBlank()) throw new IllegalArgumentException("runId is required");
+        return mapper.countLaterInRun(userId, runId, sequenceNo, checkpointId) > 0;
     }
 
     @Override
@@ -86,7 +94,44 @@ public class CheckpointServiceImpl implements CheckpointService {
         }
         updated.setVersion(expectedVersion + 1); updated.setUpdatedAt(LocalDateTime.now());
         appendAudit(userId, id, MemoryAuditEvent.Action.UPDATE, expectedVersion, expectedVersion + 1,
-                actorId, reason, requestId, updated.getStateJson());
+                actorId, reason, requestId,
+                auditPayload(AgentCheckpoint.Type.valueOf(current.getCheckpointType()), updated.getStateJson()));
+        return toModel(updated);
+    }
+
+    @Override
+    @Transactional
+    public AgentCheckpoint updateProgress(String userId, long id, long expectedVersion, String nodeName,
+                                          CheckpointState state, int sequenceNo,
+                                          String actorId, String reason, String requestId) {
+        requireOwner(userId);
+        if (nodeName == null || nodeName.isBlank() || state == null) {
+            throw new IllegalArgumentException("nodeName and state are required");
+        }
+        if (sequenceNo < 0) throw new IllegalArgumentException("sequenceNo cannot be negative");
+        var current = mapper.selectOwned(userId, id);
+        if (current == null) throw new IllegalArgumentException("checkpoint not found");
+        if (!AgentCheckpoint.Status.RUNNING.name().equals(current.getStatus())) {
+            throw new IllegalStateException("only a running checkpoint can advance");
+        }
+        if (current.getExpiresAt() != null && !current.getExpiresAt().isAfter(LocalDateTime.now())) {
+            throw new IllegalStateException("checkpoint is expired");
+        }
+        var updated = copy(current);
+        updated.setNodeName(nodeName);
+        updated.setStateJson(validator.validate(state));
+        updated.setSequenceNo(sequenceNo);
+        updated.setErrorCode(null);
+        updated.setResumeAfter(null);
+        updated.setExpiresAt(LocalDateTime.now().plus(properties.getCheckpointTtl()));
+        if (mapper.casProgress(updated, id, userId, expectedVersion) == 0) {
+            throw new MemoryVersionConflictException(expectedVersion);
+        }
+        updated.setVersion(expectedVersion + 1);
+        updated.setUpdatedAt(LocalDateTime.now());
+        appendAudit(userId, id, MemoryAuditEvent.Action.UPDATE, expectedVersion, expectedVersion + 1,
+                actorId, reason, requestId,
+                auditPayload(AgentCheckpoint.Type.valueOf(current.getCheckpointType()), updated.getStateJson()));
         return toModel(updated);
     }
 
@@ -166,6 +211,10 @@ public class CheckpointServiceImpl implements CheckpointService {
                              String actorId, String reason, String requestId, String payload) {
         audit.append(new MemoryAuditService.AuditCommand(userId, MemoryAuditEvent.ResourceType.CHECKPOINT, String.valueOf(id),
                 action, oldVersion, newVersion, MemoryAuditEvent.ActorType.SYSTEM, actorId, requestId, reason, payload, Map.of()));
+    }
+
+    private static String auditPayload(AgentCheckpoint.Type type, String stateJson) {
+        return type == AgentCheckpoint.Type.AGENTIC_RAG ? null : stateJson;
     }
 
     private static void validateCreate(CreateCommand command) {

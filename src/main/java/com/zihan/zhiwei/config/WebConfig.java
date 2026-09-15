@@ -53,6 +53,7 @@ public class WebConfig implements WebMvcConfigurer {
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
         registry.addInterceptor(rateLimitInterceptor)
-                .addPathPatterns("/api/ai/chat", "/api/ai/agent", "/api/mcp");
+                .addPathPatterns("/api/ai/chat", "/api/ai/agent", "/api/mcp",
+                        "/api/memories/checkpoints/*/resume/agentic-rag");
     }
 }

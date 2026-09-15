@@ -32,6 +32,23 @@ public final class RagState {
         return new RagState(request);
     }
 
+    public static RagState restore(AgenticRagRequest request,
+                                   QueryClassification classification,
+                                   RetrievalPlan plan,
+                                   EvidenceGrade latestGrade,
+                                   int rewriteCount,
+                                   List<RetrievalResult> rounds) {
+        RagState state = new RagState(request);
+        state.classification = classification;
+        state.plan = plan;
+        state.latestGrade = latestGrade;
+        state.rewriteCount = Math.max(0, rewriteCount);
+        if (rounds != null) {
+            state.rounds.addAll(rounds);
+        }
+        return state;
+    }
+
     public void setClassification(QueryClassification classification) {
         this.classification = classification;
     }

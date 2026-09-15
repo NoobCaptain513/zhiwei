@@ -25,6 +25,14 @@ public interface AgentCheckpointMapper extends BaseMapper<AgentCheckpointEntity>
             @Param("conversationId") Long conversationId, @Param("status") String status,
             @Param("limit") int limit);
 
+    @Select("""
+        SELECT COUNT(1) FROM agent_checkpoint
+        WHERE user_id=#{userId} AND run_id=#{runId} AND is_deleted=0
+          AND (sequence_no > #{sequenceNo} OR (sequence_no = #{sequenceNo} AND id > #{checkpointId}))
+        """)
+    int countLaterInRun(@Param("userId") String userId, @Param("runId") String runId,
+                        @Param("sequenceNo") int sequenceNo, @Param("checkpointId") long checkpointId);
+
     @Update("""
         UPDATE agent_checkpoint SET node_name=#{row.nodeName}, state_json=#{row.stateJson}, status=#{row.status},
         resume_after=#{row.resumeAfter}, error_code=#{row.errorCode}, expires_at=#{row.expiresAt}, version=version+1
@@ -33,6 +41,16 @@ public interface AgentCheckpointMapper extends BaseMapper<AgentCheckpointEntity>
     int casTransition(@Param("row") AgentCheckpointEntity row, @Param("id") long id,
                       @Param("userId") String userId, @Param("expectedVersion") long expectedVersion,
                       @Param("expectedStatus") String expectedStatus);
+
+    @Update("""
+        UPDATE agent_checkpoint SET node_name=#{row.nodeName}, state_json=#{row.stateJson},
+        sequence_no=#{row.sequenceNo}, error_code=NULL, resume_after=NULL, expires_at=#{row.expiresAt},
+        version=version+1
+        WHERE id=#{id} AND user_id=#{userId} AND version=#{expectedVersion}
+          AND status='RUNNING' AND is_deleted=0
+        """)
+    int casProgress(@Param("row") AgentCheckpointEntity row, @Param("id") long id,
+                    @Param("userId") String userId, @Param("expectedVersion") long expectedVersion);
 
     @Update("UPDATE agent_checkpoint SET is_deleted=1, deleted_at=#{now}, version=version+1 " +
             "WHERE id=#{id} AND user_id=#{userId} AND version=#{expectedVersion} AND is_deleted=0")

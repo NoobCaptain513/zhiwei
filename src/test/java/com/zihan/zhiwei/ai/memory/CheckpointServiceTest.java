@@ -62,6 +62,18 @@ class CheckpointServiceTest {
         verify(mapper).selectOwned("bob", 9L);
     }
 
+    @Test void agenticCheckpointAuditDoesNotCopyExecutableState() {
+        doAnswer(i -> { ((AgentCheckpointEntity) i.getArgument(0)).setId(9L); return 1; })
+                .when(mapper).insert(any(AgentCheckpointEntity.class));
+
+        service.create(new CheckpointService.CreateCommand("alice", "run-1", 10L,
+                AgentCheckpoint.Type.AGENTIC_RAG, "classify", state(objectMapper.createObjectNode()
+                        .put("query", "private")), AgentCheckpoint.Status.RUNNING,
+                0, null, null, "system", "start", "req"));
+
+        verify(audit).append(argThat(command -> command.payload() == null));
+    }
+
     @Test void resumeUsesOwnerStatusAndVersionCasSoOnlyOneExecutorWins() {
         when(mapper.selectOwned("alice", 9L)).thenReturn(row(AgentCheckpoint.Status.PAUSED, 4L));
         when(mapper.casTransition(any(), eq(9L), eq("alice"), eq(4L), eq("PAUSED"))).thenReturn(1, 0);
@@ -72,6 +84,25 @@ class CheckpointServiceTest {
         assertThatThrownBy(() -> service.resume("alice", 9L, 4L, "alice", "duplicate", "req2"))
                 .isInstanceOf(MemoryVersionConflictException.class);
         verify(audit, times(1)).append(any());
+    }
+
+    @Test void updateProgressAdvancesOneRunningCheckpointWithVersionCas() {
+        var running = row(AgentCheckpoint.Status.RUNNING, 4L);
+        when(mapper.selectOwned("alice", 9L)).thenReturn(running);
+        when(mapper.casProgress(any(), eq(9L), eq("alice"), eq(4L))).thenReturn(1);
+        CheckpointState next = new CheckpointState(
+                1, "grade", List.of("retrieve"), List.of("grade"), List.of(), Map.of(), null);
+
+        var advanced = service.updateProgress(
+                "alice", 9L, 4L, "grade", next, 3, "system", "node advanced", "req");
+
+        assertThat(advanced.id()).isEqualTo(9L);
+        assertThat(advanced.status()).isEqualTo(AgentCheckpoint.Status.RUNNING);
+        assertThat(advanced.nodeName()).isEqualTo("grade");
+        assertThat(advanced.sequenceNo()).isEqualTo(3);
+        assertThat(advanced.version()).isEqualTo(5L);
+        verify(mapper).casProgress(argThat(row -> "grade".equals(row.getNodeName())
+                        && row.getSequenceNo() == 3), eq(9L), eq("alice"), eq(4L));
     }
 
     @Test void terminalStatesCannotResumeAndNormalTransitionsAreCasProtected() {
