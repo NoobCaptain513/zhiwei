@@ -12,6 +12,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 @Component
@@ -36,7 +37,7 @@ public class DefaultQueryPlanner implements QueryPlanner {
                 ? queryRewriter.rewrite(state.getRequest().query(), state.getRequest().historyContext())
                 : queryRewriter.rewrite(state.getRequest().query(), state.getRequest().historyContext(),
                         state.getRequest().runContext(), "plan");
-        RetrievalStrategy strategy = chooseStrategy(state.getClassification().questionType());
+        RetrievalStrategy strategy = chooseStrategy(inferType(state.getRequest().query()));
         List<RetrievalTask> tasks = rewrite.allQueries().stream()
                 .map(query -> new RetrievalTask(query, KnowledgeSource.INTERNAL_KB, strategy, Map.of()))
                 .toList();
@@ -49,5 +50,23 @@ public class DefaultQueryPlanner implements QueryPlanner {
             case SUMMARY -> RetrievalStrategy.VECTOR_HEAVY;
             default -> RetrievalStrategy.HYBRID;
         };
+    }
+
+    private static QuestionType inferType(String query) {
+        String text = query == null ? "" : query.toLowerCase(Locale.ROOT);
+        if (text.contains("故障") || text.contains("报错") || text.contains("异常")
+                || text.contains("error")) {
+            return QuestionType.TROUBLESHOOTING;
+        }
+        if (text.contains("如何") || text.contains("怎么") || text.contains("步骤")) {
+            return QuestionType.HOW_TO;
+        }
+        if (text.contains("总结") || text.contains("摘要")) {
+            return QuestionType.SUMMARY;
+        }
+        if (text.contains("区别") || text.contains("对比")) {
+            return QuestionType.COMPARISON;
+        }
+        return QuestionType.FACTUAL;
     }
 }

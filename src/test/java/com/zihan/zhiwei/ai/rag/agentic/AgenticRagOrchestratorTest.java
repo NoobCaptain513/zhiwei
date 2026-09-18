@@ -43,7 +43,6 @@ import static org.mockito.Mockito.when;
 @ExtendWith(MockitoExtension.class)
 class AgenticRagOrchestratorTest {
 
-    @Mock private QueryClassifier classifier;
     @Mock private QueryPlanner planner;
     @Mock private Retriever retriever;
     @Mock private EvidenceGrader evidenceGrader;
@@ -51,26 +50,30 @@ class AgenticRagOrchestratorTest {
     @Mock private AnswerGenerator answerGenerator;
 
     @Test
-    void shouldBypassRetrievalWhenClassifierSaysRagIsNotRequired() {
-        AgenticRagRequest request = new AgenticRagRequest("你好", null, null, "qwen-plus");
-        when(classifier.classify(request)).thenReturn(new QueryClassification(
-                false, QuestionType.CONVERSATIONAL, false, false, 0.99, "普通问候"));
+    void shouldStartPlanningWithoutClassifyingWhetherRagIsRequiredAgain() {
+        AgenticRagRequest request = new AgenticRagRequest(
+                "Redis MOVED 怎么处理", null, null, "qwen-plus");
+        when(planner.plan(org.mockito.ArgumentMatchers.any())).thenReturn(plan("Redis MOVED", 20));
+        when(retriever.retrieve(org.mockito.ArgumentMatchers.any())).thenReturn(RetrievalResult.empty());
+        when(evidenceGrader.grade(org.mockito.ArgumentMatchers.any())).thenReturn(new EvidenceGrade(
+                false, List.of(), List.of(), List.of("缺少处置步骤"), List.of(),
+                NextAction.ABSTAIN, "无法可靠检索"));
+        AgenticRagResult expected = new AgenticRagResult(true, "证据不足", List.of(),
+                1, false, false, "INSUFFICIENT_EVIDENCE", "system", "none",
+                0, 0, 0, false, 1);
+        when(answerGenerator.abstain(org.mockito.ArgumentMatchers.any())).thenReturn(expected);
 
         AgenticRagOrchestrator orchestrator = new AgenticRagOrchestrator(
-                classifier, planner, retriever, evidenceGrader, queryRewriter, answerGenerator, 2);
+                planner, retriever, evidenceGrader, queryRewriter, answerGenerator, 2);
 
-        AgenticRagResult result = orchestrator.execute(request);
-
-        assertThat(result.ragRequired()).isFalse();
-        verify(planner, never()).plan(org.mockito.ArgumentMatchers.any());
-        verify(retriever, never()).retrieve(org.mockito.ArgumentMatchers.any());
+        assertThat(orchestrator.execute(request)).isSameAs(expected);
+        verify(planner).plan(org.mockito.ArgumentMatchers.any());
+        verify(retriever).retrieve(org.mockito.ArgumentMatchers.any());
     }
 
     @Test
     void shouldRewriteAndRetrieveAgainWhenEvidenceIsInsufficient() {
         AgenticRagRequest request = new AgenticRagRequest("Redis MOVED 怎么处理", null, null, "qwen-plus");
-        QueryClassification classification = new QueryClassification(
-                true, QuestionType.TROUBLESHOOTING, false, true, 0.95, "需要内部处置文档");
         RetrievalPlan initialPlan = plan("MOVED 原因", 20);
         RetrievalPlan rewrittenPlan = plan("Redis 7 MOVED 标准处置步骤", 40);
         EvidenceGrade insufficient = new EvidenceGrade(false, List.of(), List.of(),
@@ -80,7 +83,6 @@ class AgenticRagOrchestratorTest {
         AgenticRagResult expected = new AgenticRagResult(true, "按手册处理 [E7]", List.of(),
                 2, true, false, "ANSWERED", "test", "qwen-plus", 1, 1, 2, false, 10);
 
-        when(classifier.classify(request)).thenReturn(classification);
         when(planner.plan(org.mockito.ArgumentMatchers.any())).thenReturn(initialPlan);
         when(retriever.retrieve(org.mockito.ArgumentMatchers.any()))
                 .thenReturn(RetrievalResult.empty(), RetrievalResult.empty());
@@ -90,7 +92,7 @@ class AgenticRagOrchestratorTest {
         when(answerGenerator.generateAndVerify(org.mockito.ArgumentMatchers.any())).thenReturn(expected);
 
         AgenticRagOrchestrator orchestrator = new AgenticRagOrchestrator(
-                classifier, planner, retriever, evidenceGrader, queryRewriter, answerGenerator, 2);
+                planner, retriever, evidenceGrader, queryRewriter, answerGenerator, 2);
 
         AgenticRagResult result = orchestrator.execute(request);
 
@@ -102,8 +104,6 @@ class AgenticRagOrchestratorTest {
     @Test
     void shouldAbstainImmediatelyWhenGraderRequestsAbstention() {
         AgenticRagRequest request = new AgenticRagRequest("敏感事实", null, null, "qwen-plus");
-        when(classifier.classify(request)).thenReturn(new QueryClassification(
-                true, QuestionType.FACTUAL, false, false, 1, "需要证据"));
         when(planner.plan(org.mockito.ArgumentMatchers.any())).thenReturn(plan("事实", 20));
         when(retriever.retrieve(org.mockito.ArgumentMatchers.any())).thenReturn(RetrievalResult.empty());
         when(evidenceGrader.grade(org.mockito.ArgumentMatchers.any())).thenReturn(new EvidenceGrade(
@@ -114,7 +114,7 @@ class AgenticRagOrchestratorTest {
                 0, 0, 0, false, 1);
         when(answerGenerator.abstain(org.mockito.ArgumentMatchers.any())).thenReturn(expected);
         AgenticRagOrchestrator orchestrator = new AgenticRagOrchestrator(
-                classifier, planner, retriever, evidenceGrader, queryRewriter, answerGenerator, 2);
+                planner, retriever, evidenceGrader, queryRewriter, answerGenerator, 2);
 
         assertThat(orchestrator.execute(request)).isSameAs(expected);
         verify(queryRewriter, never()).rewrite(org.mockito.ArgumentMatchers.any());
@@ -127,12 +127,12 @@ class AgenticRagOrchestratorTest {
                 new AgentNodeObserver(new SimpleMeterRegistry()));
         AgenticRagRequest request = new AgenticRagRequest(
                 "需要检索的问题", null, null, "qwen-plus", context);
-        QueryClassifier budgetExhaustingClassifier = req -> {
-            req.runContext().reserve("classify", 20, 10, false);
+        QueryPlanner budgetExhaustingPlanner = state -> {
+            state.getRequest().runContext().reserve("plan", 20, 10, false);
             throw new AssertionError("unreachable");
         };
         AgenticRagOrchestrator orchestrator = new AgenticRagOrchestrator(
-                budgetExhaustingClassifier, planner, retriever, evidenceGrader,
+                budgetExhaustingPlanner, retriever, evidenceGrader,
                 queryRewriter, answerGenerator, 2);
 
         AgenticRagResult result = orchestrator.execute(request);
@@ -146,8 +146,6 @@ class AgenticRagOrchestratorTest {
     void shouldPersistCompleteResumableStateAndNextNode() {
         AgenticRagRequest request = new AgenticRagRequest(
                 "Redis MOVED 怎么处理", "history", null, "qwen-plus", "alice", 10L);
-        QueryClassification classification = new QueryClassification(
-                true, QuestionType.TROUBLESHOOTING, false, true, 0.95, "需要内部处置文档");
         RetrievalPlan retrievalPlan = plan("Redis MOVED", 20);
         RagHit hit = new RagHit(new KnowledgeChunk(7L, 3L, "runbook", "Redis 手册",
                 "执行 CLUSTER NODES 检查槽位。", 12, LocalDateTime.now()), 0.9, 0.8, 0.88);
@@ -156,7 +154,6 @@ class AgenticRagOrchestratorTest {
                 List.of(), List.of(), NextAction.ANSWER, "证据充分");
         AgenticRagResult expected = new AgenticRagResult(true, "按手册处理 [E7]", List.of(),
                 1, false, false, "ANSWERED", "test", "qwen-plus", 1, 1, 2, false, 10);
-        when(classifier.classify(org.mockito.ArgumentMatchers.any())).thenReturn(classification);
         when(planner.plan(org.mockito.ArgumentMatchers.any())).thenReturn(retrievalPlan);
         when(retriever.retrieve(org.mockito.ArgumentMatchers.any())).thenReturn(retrieval);
         when(evidenceGrader.grade(org.mockito.ArgumentMatchers.any())).thenReturn(sufficient);
@@ -185,7 +182,7 @@ class AgenticRagOrchestratorTest {
                     null, null, LocalDateTime.now().plusDays(1), LocalDateTime.now(), LocalDateTime.now());
         });
         AgenticRagOrchestrator orchestrator = new AgenticRagOrchestrator(
-                classifier, planner, retriever, evidenceGrader, queryRewriter, answerGenerator, 2);
+                planner, retriever, evidenceGrader, queryRewriter, answerGenerator, 2);
         ReflectionTestUtils.setField(orchestrator, "checkpointService", checkpoints);
         ReflectionTestUtils.setField(orchestrator, "memoryProperties", memory);
 
@@ -200,7 +197,7 @@ class AgenticRagOrchestratorTest {
         var resumable = states.getValue().resumeParameters();
         assertThat(resumable).isNotNull();
         assertThat(resumable.path("nextNode").asText()).isEqualTo("generate");
-        assertThat(resumable.path("classification").isObject()).isTrue();
+        assertThat(resumable.path("classification").isNull()).isTrue();
         assertThat(resumable.path("plan").isObject()).isTrue();
         assertThat(resumable.path("rounds").size()).isEqualTo(1);
         assertThat(resumable.path("latestGrade").isObject()).isTrue();
@@ -267,7 +264,7 @@ class AgenticRagOrchestratorTest {
         MemoryProperties memory = new MemoryProperties();
         memory.setEnabled(true);
         AgenticRagOrchestrator orchestrator = new AgenticRagOrchestrator(
-                classifier, planner, retriever, evidenceGrader, queryRewriter, answerGenerator, 2);
+                planner, retriever, evidenceGrader, queryRewriter, answerGenerator, 2);
         ReflectionTestUtils.setField(orchestrator, "checkpointService", checkpoints);
         ReflectionTestUtils.setField(orchestrator, "memoryProperties", memory);
         ConversationMapper conversations = mock(ConversationMapper.class);
@@ -279,7 +276,6 @@ class AgenticRagOrchestratorTest {
 
         assertThat(orchestrator.resume("alice", 9L, 4L, "alice", "retry", "req-1"))
                 .isSameAs(expected);
-        verify(classifier, never()).classify(org.mockito.ArgumentMatchers.any());
         verify(planner, never()).plan(org.mockito.ArgumentMatchers.any());
         verify(retriever, never()).retrieve(org.mockito.ArgumentMatchers.any());
         verify(evidenceGrader).grade(org.mockito.ArgumentMatchers.argThat(
@@ -314,7 +310,7 @@ class AgenticRagOrchestratorTest {
         when(checkpoints.get("alice", 9L)).thenReturn(java.util.Optional.of(source));
         when(checkpoints.hasLaterInRun("alice", "legacy-run", 0, 9L)).thenReturn(true);
         AgenticRagOrchestrator orchestrator = new AgenticRagOrchestrator(
-                classifier, planner, retriever, evidenceGrader, queryRewriter, answerGenerator, 2);
+                planner, retriever, evidenceGrader, queryRewriter, answerGenerator, 2);
         ReflectionTestUtils.setField(orchestrator, "checkpointService", checkpoints);
 
         assertThatThrownBy(() -> orchestrator.resume("alice", 9L, 2L, "alice", "retry", "req"))
@@ -376,7 +372,7 @@ class AgenticRagOrchestratorTest {
         CheckpointService checkpoints = mock(CheckpointService.class);
         when(checkpoints.get("alice", 9L)).thenReturn(java.util.Optional.of(source));
         AgenticRagOrchestrator orchestrator = new AgenticRagOrchestrator(
-                classifier, planner, retriever, evidenceGrader, queryRewriter, answerGenerator, 2);
+                planner, retriever, evidenceGrader, queryRewriter, answerGenerator, 2);
         ReflectionTestUtils.setField(orchestrator, "checkpointService", checkpoints);
 
         assertThatThrownBy(() -> orchestrator.resume("alice", 9L, 2L, "alice", "retry", "req"))
@@ -408,7 +404,7 @@ class AgenticRagOrchestratorTest {
         conversation.setUserId("alice");
         when(conversations.selectById(10L)).thenReturn(conversation);
         AgenticRagOrchestrator orchestrator = new AgenticRagOrchestrator(
-                classifier, planner, retriever, evidenceGrader, queryRewriter, answerGenerator, 2);
+                planner, retriever, evidenceGrader, queryRewriter, answerGenerator, 2);
         ReflectionTestUtils.setField(orchestrator, "checkpointService", checkpoints);
         ReflectionTestUtils.setField(orchestrator, "conversationMapper", conversations);
 

@@ -22,8 +22,9 @@ public record AgenticRagResult(
         citations = citations == null ? List.of() : List.copyOf(citations);
     }
 
+    /** Compatibility result for callers that decide not to enter Agentic RAG. */
     public static AgenticRagResult notRequired() {
         return new AgenticRagResult(false, null, List.of(), 0, false, false,
-                "RAG_NOT_REQUIRED", "system", "classifier", 0, 0, 0, false, 0L);
+                "RAG_NOT_REQUIRED", "system", "router", 0, 0, 0, false, 0L);
     }
 }

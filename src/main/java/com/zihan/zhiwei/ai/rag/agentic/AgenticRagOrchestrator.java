@@ -32,7 +32,6 @@ public class AgenticRagOrchestrator {
     private static final Set<String> NON_RETRYABLE_FAILURES = Set.of(
             "TOKEN_BUDGET_EXHAUSTED", "NODE_CALL_LIMIT", "DEADLINE_EXCEEDED");
 
-    private final QueryClassifier classifier;
     private final QueryPlanner planner;
     private final Retriever retriever;
     private final EvidenceGrader evidenceGrader;
@@ -52,7 +51,6 @@ public class AgenticRagOrchestrator {
 
     @Autowired
     public AgenticRagOrchestrator(
-            QueryClassifier classifier,
             QueryPlanner planner,
             Retriever retriever,
             EvidenceGrader evidenceGrader,
@@ -62,7 +60,6 @@ public class AgenticRagOrchestrator {
             AgentNodeObserver observer,
             AgentReliabilityProperties reliabilityProperties,
             ObjectMapper objectMapper) {
-        this.classifier = classifier;
         this.planner = planner;
         this.retriever = retriever;
         this.evidenceGrader = evidenceGrader;
@@ -75,14 +72,13 @@ public class AgenticRagOrchestrator {
     }
 
     public AgenticRagOrchestrator(
-            QueryClassifier classifier,
             QueryPlanner planner,
             Retriever retriever,
             EvidenceGrader evidenceGrader,
             FeedbackQueryRewriter queryRewriter,
             AnswerGenerator answerGenerator,
             int maxRewriteAttempts) {
-        this(classifier, planner, retriever, evidenceGrader, queryRewriter, answerGenerator,
+        this(planner, retriever, evidenceGrader, queryRewriter, answerGenerator,
                 maxRewriteAttempts,
                 new AgentNodeObserver(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()),
                 new AgentReliabilityProperties(), new ObjectMapper().findAndRegisterModules());
@@ -97,8 +93,8 @@ public class AgenticRagOrchestrator {
         RagState state = RagState.initial(effectiveRequest);
         String runId = UUID.randomUUID().toString();
         AgentCheckpoint checkpoint = saveCheckpoint(
-                effectiveRequest, runId, 0, "classify", state, context, null);
-        return continueRun(effectiveRequest, context, state, runId, 1, "classify", checkpoint);
+                effectiveRequest, runId, 0, "plan", state, context, null);
+        return continueRun(effectiveRequest, context, state, runId, 1, "plan", checkpoint);
     }
 
     public AgenticRagResult resume(String userId, long checkpointId, long expectedVersion,
@@ -129,8 +125,8 @@ public class AgenticRagOrchestrator {
         AgentCheckpoint claimed = checkpointService.resume(
                 userId, checkpointId, expectedVersion, actorId, reason, requestId);
         int nextSequence = sourceSequence + 1;
-        return continueRun(request, context, state, source.runId(), nextSequence,
-                snapshot.nextNode(), claimed);
+        String nextNode = "classify".equals(snapshot.nextNode()) ? "plan" : snapshot.nextNode();
+        return continueRun(request, context, state, source.runId(), nextSequence, nextNode, claimed);
     }
 
     private AgenticRagResult continueRun(
@@ -146,14 +142,6 @@ public class AgenticRagOrchestrator {
         try {
             while (true) {
                 switch (nextNode) {
-                    case "classify" -> {
-                        state.setClassification(context.observe("classify", () -> classifier.classify(request)));
-                        if (!state.getClassification().needRag()) {
-                            completeCheckpoint(request, checkpoint, state, context, "classify");
-                            return AgenticRagResult.notRequired();
-                        }
-                        nextNode = "plan";
-                    }
                     case "plan" -> {
                         state.setPlan(context.observe("plan", () -> planner.plan(state)));
                         nextNode = "retrieve";

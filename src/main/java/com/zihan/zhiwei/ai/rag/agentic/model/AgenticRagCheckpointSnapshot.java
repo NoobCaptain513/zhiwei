@@ -75,9 +75,6 @@ public record AgenticRagCheckpointSnapshot(
     private static void validateState(String node, QueryClassification classification,
                                       RetrievalPlan plan, List<RetrievalResult> rounds,
                                       EvidenceGrade grade) {
-        if (!"classify".equals(node) && classification == null) {
-            throw new IllegalArgumentException(node + " requires classification");
-        }
         if (classification != null && !classification.needRag() && !"classify".equals(node)) {
             throw new IllegalArgumentException(node + " cannot resume after a no-RAG classification");
         }

@@ -38,6 +38,20 @@ class PlanningNodesTest {
     }
 
     @Test
+    void plannerShouldChooseStrategyFromQueryWithoutAClassifierResult() {
+        QueryRewriter delegate = mock(QueryRewriter.class);
+        when(delegate.rewrite("Redis MOVED 报错怎么处理", null))
+                .thenReturn(new QueryRewriteResult("original", "rewritten", List.of("处理步骤")));
+        RagState state = RagState.initial(new AgenticRagRequest(
+                "Redis MOVED 报错怎么处理", null, null, "qwen-plus"));
+
+        RetrievalPlan plan = new DefaultQueryPlanner(delegate, 5, 20).plan(state);
+
+        assertThat(plan.tasks()).extracting(RetrievalTask::strategy)
+                .containsOnly(RetrievalStrategy.KEYWORD_HEAVY);
+    }
+
+    @Test
     void feedbackRewriterShouldExpandRecallAndIncludeEvidenceGaps() {
         QueryRewriter delegate = mock(QueryRewriter.class);
         when(delegate.rewrite(contains("缺少生产处置步骤"), org.mockito.ArgumentMatchers.any()))
